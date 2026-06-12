@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.2</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.3</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div class="buttons">
     <button id="btnTest">設定チェックを実行</button>
@@ -53,7 +53,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.2（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.3（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -61,6 +61,7 @@
  *   3) リモート可否: ON／OFF の単一選択（チェックボックスでも動作）
  *   4) 役職の兼務: 複数役職のうち1つでもOFFがあれば常駐扱い（安全側）
  *   5) 例外フラグ: 列が無ければ全員「なし」として扱う（任意）
+ *   6) 表記: 出社→「本社」、休→「休み」に変更（冒頭のVALで調整可能）＋選択肢の自動検証を追加
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -84,7 +85,7 @@ const CONFIG = {
     HOLIDAY: { DATE: '日付', NAME: '名称' }
   },
   VAL: {
-    OFFICE: '出社', REMOTE: 'リモート', OFF: '休', DRAFT: '下書き',
+    OFFICE: '本社', REMOTE: 'リモート', OFF: '休み', DRAFT: '下書き', FINAL: '確定',
     ACTIVE: '在籍', MUST_ONSITE: '常駐必須', OK: '成功', WARN: '警告あり', ERR: 'エラー'
   },
   RULES: { MAX_REMOTE_PER_WEEK: 2, FAIRNESS_LOOKBACK_WEEKS: 4, MAX_RETRY: 200 }
@@ -173,6 +174,31 @@ async function getMap(table){
 function checkFields(map, names, tableName, problems){
   names.forEach(n=>{ if(!map[n]) problems.push('テーブル「'+tableName+'」にフィールド「'+n+'」がありません'); });
 }
+/* 単一選択フィールドに必要な選択肢が揃っているか検証する */
+async function checkSelectOptions(tables, problems){
+  const plan = {
+    SHIFT: [ [F.SHIFT.DAYS, [V.OFFICE, V.REMOTE, V.OFF]], [[F.SHIFT.STATUS], [V.DRAFT, V.FINAL]] ],
+    WLOG:  [ [[F.WLOG.RESULT], [V.OK, V.WARN, V.ERR]], [[F.WLOG.STATUS], [V.DRAFT, V.FINAL]] ]
+  };
+  for (const key of Object.keys(plan)){
+    if (!tables[key]) continue;
+    let metas;
+    try{ metas = await tables[key].getFieldMetaList(); }catch(e){ continue; }
+    for (const pair of plan[key]){
+      const fields = pair[0], reqs = pair[1];
+      for (const fname of fields){
+        const meta = metas.find(m=>m.name===fname);
+        if (!meta || !meta.property || !Array.isArray(meta.property.options)) continue;
+        const opts = meta.property.options.map(o=>(o && (o.name || o.text)) || '').filter(Boolean);
+        for (const req of reqs){
+          if (opts.indexOf(req) === -1){
+            problems.push('テーブル「'+CONFIG.TABLES[key]+'」の「'+fname+'」に選択肢「'+req+'」がありません（現在: '+(opts.join('・')||'未設定')+'）');
+          }
+        }
+      }
+    }
+  }
+}
 async function readAll(table){
   const out=[]; let pageToken=undefined; let size=5000;
   while(true){
@@ -213,7 +239,7 @@ async function probeWriteFormat(tShift, mShift, sampleEmpId){
       if (okLink&&okSel){ WRITE=c; return c.name; }
     }catch(e){ if(rid){ try{ await tShift.deleteRecord(rid); }catch(_){}} }
   }
-  throw new Error('シフト表へのテスト書き込みが全形式で失敗しました。シフト表のフィールド型（週=日付／社員=関連／曜日とステータス=単一選択）と選択肢（出社・リモート・休・下書き・確定）を確認してください。');
+  throw new Error('シフト表へのテスト書き込みが全形式で失敗しました。シフト表のフィールド型（週=日付／社員=関連／曜日とステータス=単一選択）と選択肢（本社・リモート・休み・下書き・確定）を確認してください。');
 }
 
 /* ---- マスタ読み込み ---- */
@@ -397,6 +423,7 @@ async function buildContext(){
   checkFields(maps.SHIFT,[F.SHIFT.WEEK,F.SHIFT.EMP,...F.SHIFT.DAYS,F.SHIFT.STATUS],CONFIG.TABLES.SHIFT,problems);
   checkFields(maps.WLOG,[F.WLOG.WEEK,F.WLOG.RESULT,F.WLOG.LOG,F.WLOG.STATUS],CONFIG.TABLES.WLOG,problems);
   checkFields(maps.HOLIDAY,[F.HOLIDAY.DATE,F.HOLIDAY.NAME],CONFIG.TABLES.HOLIDAY,problems);
+  await checkSelectOptions(tables, problems);
   if(problems.length) throw new Error(problems.join('\n'));
   return { tables, maps };
 }
