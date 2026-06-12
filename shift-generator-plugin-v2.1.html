@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>リモートシフト自動生成</title>
+<style>
+  :root{
+    --text:#1f2329; --sub:#646a73; --line:#dee0e3; --bg:#ffffff; --panel:#f5f6f7;
+    --accent:#3370ff; --accent-dark:#245bdb;
+    --ok:#2ea121; --warn:#de7802; --err:#d83931;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; padding:16px; background:var(--bg); color:var(--text);
+    font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;
+    font-size:13px; line-height:1.6;
+  }
+  h1{ font-size:15px; font-weight:700; margin:0 0 2px; }
+  h1 .ver{ font-size:11px; font-weight:400; color:var(--sub); margin-left:6px; }
+  .sub{ color:var(--sub); font-size:12px; margin-bottom:14px; }
+  .sub b{ color:var(--text); font-weight:600; }
+  .buttons{ display:flex; flex-direction:column; gap:8px; margin-bottom:14px; }
+  button{
+    width:100%; padding:9px 12px; border-radius:6px; font-size:13px; font-weight:600;
+    border:1px solid var(--line); background:#fff; color:var(--text); cursor:pointer;
+  }
+  button.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover:not(:disabled){ background:var(--accent-dark); }
+  button:hover:not(:disabled){ border-color:var(--accent); }
+  button:disabled{ opacity:.5; cursor:not-allowed; }
+  button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  #log{ border-top:1px solid var(--line); padding-top:10px; }
+  .line{ display:flex; gap:8px; margin:3px 0; }
+  .dot{ flex:none; width:8px; height:8px; border-radius:50%; margin-top:6px; background:var(--sub); }
+  .line.ok .dot{ background:var(--ok); } .line.warn .dot{ background:var(--warn); }
+  .line.err .dot{ background:var(--err); } .line.run .dot{ background:var(--accent); }
+  .line.warn{ color:var(--warn); } .line.err{ color:var(--err); }
+  .report{
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:10px 12px; margin:8px 0; white-space:pre-wrap; font-size:12px;
+  }
+</style>
+</head>
+<body>
+  <h1>リモートシフト自動生成<span class="ver">v2.1</span></h1>
+  <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
+  <div class="buttons">
+    <button id="btnTest">設定チェックを実行</button>
+    <button id="btnGen" class="primary">シフトを生成（下書き）</button>
+  </div>
+  <div id="log"></div>
+
+<script type="module">
+/* ====================================================================
+ * リモートシフト自動生成プラグイン v2.1（Lark Base用・単一ファイル）
+ * 2026-06-12 改修: 実際のBase構造に合わせた対応版
+ *   1) テーブル名: 役職別リモート設定一覧 ／ Division座席数マスタ
+ *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
+ *      ※在籍中のメンバーだけを判定対象にします
+ *   3) リモート可否: ON／OFF の単一選択（チェックボックスでも動作）
+ *   4) 役職の兼務: 複数役職のうち1つでもOFFがあれば常駐扱い（安全側）
+ *   5) 例外フラグ: 列が無ければ全員「なし」として扱う（任意）
+ * --------------------------------------------------------------------
+ * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
+ * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
+ *         カスタムプラグイン（スクリプト）としてURLを登録 →
+ *         ③「設定チェック」→「シフトを生成」の順に実行
+ * ==================================================================== */
+
+/* ---- 設定（Base側のテーブル名・フィールド名・選択肢と完全一致させる）---- */
+const CONFIG = {
+  TABLES: {
+    ROLE: '役職別リモート設定一覧', DIV: 'Division座席数マスタ', EMP: '社員マスタ',
+    SHIFT: 'シフト表', WLOG: '週管理', HOLIDAY: '祝日マスタ'
+  },
+  FIELD: {
+    ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
+    DIV:     { NAME: 'Division名', SEATS: '席数' },
+    EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
+               EXCEPTION: '例外フラグ', STATUS: '在籍状況' },   // 例外フラグは任意（無くても可）
+    SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], STATUS: 'ステータス' },
+    WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス' },
+    HOLIDAY: { DATE: '日付', NAME: '名称' }
+  },
+  VAL: {
+    OFFICE: '出社', REMOTE: 'リモート', OFF: '休', DRAFT: '下書き',
+    ACTIVE: '在籍', MUST_ONSITE: '常駐必須', OK: '成功', WARN: '警告あり', ERR: 'エラー'
+  },
+  RULES: { MAX_REMOTE_PER_WEEK: 2, FAIRNESS_LOOKBACK_WEEKS: 4, MAX_RETRY: 200 }
+};
+const F = CONFIG.FIELD, V = CONFIG.VAL, R = CONFIG.RULES;
+
+/* ---- 画面まわり ---- */
+const logEl = document.getElementById('log');
+const btnTest = document.getElementById('btnTest');
+const btnGen = document.getElementById('btnGen');
+function log(msg, type){ const d=document.createElement('div'); d.className='line '+(type||'');
+  d.innerHTML='<span class="dot"></span><span></span>'; d.lastChild.textContent=msg; logEl.appendChild(d); }
+function report(text){ const d=document.createElement('div'); d.className='report'; d.textContent=text; logEl.appendChild(d); }
+function clearLog(){ logEl.innerHTML=''; }
+function setBusy(b){ btnTest.disabled=b; btnGen.disabled=b; }
+
+/* ---- 日付ヘルパー ---- */
+const DAY = 86400000;
+function nextMonday(){ const d=new Date(); d.setHours(0,0,0,0); do{ d.setDate(d.getDate()+1); }while(d.getDay()!==1); return d; }
+function addDays(d,n){ const x=new Date(d.getTime()); x.setDate(x.getDate()+n); return x; }
+function dayDiff(a,b){ return Math.round((a.getTime()-b.getTime())/DAY); }
+function weeksAgo(ts, mondayMs){ return Math.round((mondayMs-ts)/(7*DAY)); }
+function fmt(d){ return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0'); }
+function dateKey(ts){ const d=new Date(ts); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); }
+
+/* ---- セル値の解釈（Baseの返却形式の揺れを吸収）---- */
+function cellText(v){
+  if (v==null) return '';
+  if (typeof v==='string') return v;
+  if (typeof v==='number'||typeof v==='boolean') return String(v);
+  if (Array.isArray(v)) return v.map(cellText).join('');
+  if (typeof v==='object'){ if (typeof v.text==='string') return v.text; if (typeof v.name==='string') return v.name; }
+  return String(v);
+}
+function cellNum(v){ if (v==null) return 0; if (typeof v==='number') return v; const n=Number(cellText(v)); return isNaN(n)?0:n; }
+function cellLinkIds(v){
+  if (!v) return [];
+  if (Array.isArray(v)){ const out=[]; for(const x of v){
+    if (typeof x==='string') out.push(x);
+    else if (x&&Array.isArray(x.recordIds)) out.push(...x.recordIds);
+    else if (x&&Array.isArray(x.record_ids)) out.push(...x.record_ids);
+    else if (x&&x.recordId) out.push(x.recordId); } return out; }
+  if (Array.isArray(v.recordIds)) return v.recordIds;
+  if (Array.isArray(v.record_ids)) return v.record_ids;
+  return [];
+}
+const firstLink = v => cellLinkIds(v)[0] || null;
+/* リモート可否: チェックボックスtrue または 単一選択「ON」をリモート可と解釈 */
+function isRemoteOK(v){
+  if (v===true) return true;
+  const t=cellText(v).trim().toUpperCase();
+  return t==='ON'||t==='TRUE'||t==='はい';
+}
+
+/* ---- SDK 読み込み ---- */
+let bitable=null;
+async function loadSDK(){
+  if (bitable) return;
+  const urls=['https://cdn.jsdelivr.net/npm/@lark-base-open/js-sdk/+esm',
+              'https://esm.sh/@lark-base-open/js-sdk'];
+  let lastErr=null;
+  for (const u of urls){ try{ const m=await import(u); bitable=m.bitable; if(bitable) return; }catch(e){ lastErr=e; } }
+  throw new Error('Base SDKを読み込めませんでした。ネットワーク（CDNへの到達性）を確認してください。'+(lastErr?(' 詳細: '+lastErr.message):''));
+}
+
+/* ---- テーブル・フィールド ---- */
+async function getTables(){
+  await loadSDK();
+  const tables={}, missing=[];
+  for (const key of Object.keys(CONFIG.TABLES)){
+    const name=CONFIG.TABLES[key];
+    try{ tables[key]=await withTimeout(bitable.base.getTableByName(name), 8000,
+      'Baseに接続できません。このページはLark Baseのプラグインとして開いてください。'); }
+    catch(e){ if(String(e.message||e).includes('接続できません')) throw e; missing.push(name); }
+  }
+  return { tables, missing };
+}
+function withTimeout(promise, ms, msg){
+  return Promise.race([promise, new Promise((_,rej)=>setTimeout(()=>rej(new Error(msg)), ms))]);
+}
+async function getMap(table){
+  const metas=await table.getFieldMetaList();
+  const byName={}; metas.forEach(m=>{ byName[m.name]=m.id; });
+  return byName;
+}
+function checkFields(map, names, tableName, problems){
+  names.forEach(n=>{ if(!map[n]) problems.push('テーブル「'+tableName+'」にフィールド「'+n+'」がありません'); });
+}
+async function readAll(table){
+  const out=[]; let pageToken=undefined; let size=5000;
+  while(true){
+    let res;
+    try{ res=await table.getRecords({ pageSize:size, pageToken }); }
+    catch(e){ if(size>500){ size=500; continue; } throw e; }
+    const recs=res.records||res.items||[];
+    out.push(...recs);
+    const more=res.hasMore===true; pageToken=res.pageToken||res.page_token;
+    if(!more||!pageToken) break;
+  }
+  return out;
+}
+
+/* ---- 書き込み形式の自動判定（環境差を吸収）---- */
+const COMBOS=[
+  { name:'A', link:id=>({recordIds:[id]}), sel:s=>s },
+  { name:'B', link:id=>[id],               sel:s=>s },
+  { name:'C', link:id=>({recordIds:[id]}), sel:s=>({text:s}) },
+  { name:'D', link:id=>[id],               sel:s=>({text:s}) }
+];
+let WRITE=COMBOS[0];
+async function probeWriteFormat(tShift, mShift, sampleEmpId){
+  for (const c of COMBOS){
+    let rid=null;
+    try{
+      const fields={};
+      fields[mShift[F.SHIFT.WEEK]]=Date.now();
+      fields[mShift[F.SHIFT.EMP]]=c.link(sampleEmpId);
+      fields[mShift[F.SHIFT.DAYS[0]]]=c.sel(V.OFFICE);
+      fields[mShift[F.SHIFT.STATUS]]=c.sel(V.DRAFT);
+      rid=await tShift.addRecord({ fields });
+      const rec=await tShift.getRecordById(rid);
+      const fl=(rec&&rec.fields)?rec.fields:rec;
+      const okLink=cellLinkIds(fl[mShift[F.SHIFT.EMP]]).includes(sampleEmpId);
+      const okSel=cellText(fl[mShift[F.SHIFT.DAYS[0]]])===V.OFFICE;
+      await tShift.deleteRecord(rid); rid=null;
+      if (okLink&&okSel){ WRITE=c; return c.name; }
+    }catch(e){ if(rid){ try{ await tShift.deleteRecord(rid); }catch(_){}} }
+  }
+  throw new Error('シフト表へのテスト書き込みが全形式で失敗しました。シフト表のフィールド型（週=日付／社員=関連／曜日とステータス=単一選択）と選択肢（出社・リモート・休・下書き・確定）を確認してください。');
+}
+
+/* ---- マスタ読み込み ---- */
+async function loadMasters(ctx){
+  const roles={};
+  (await readAll(ctx.tables.ROLE)).forEach(r=>{
+    roles[r.recordId]={ name:cellText(r.fields[ctx.maps.ROLE[F.ROLE.NAME]]),
+                        remoteOK:isRemoteOK(r.fields[ctx.maps.ROLE[F.ROLE.REMOTE_OK]]) };
+  });
+  const divisions={};
+  (await readAll(ctx.tables.DIV)).forEach(r=>{
+    divisions[r.recordId]={ id:r.recordId, name:cellText(r.fields[ctx.maps.DIV[F.DIV.NAME]]),
+                            seats:cellNum(r.fields[ctx.maps.DIV[F.DIV.SEATS]]) };
+  });
+  const m=ctx.maps.EMP; const employees=[];
+  (await readAll(ctx.tables.EMP)).forEach(r=>{
+    const f=r.fields;
+    if (cellText(f[m[F.EMP.STATUS]])!==V.ACTIVE) return;   // 在籍のみ（入社予定・休職・退職は対象外）
+    const roleIds=cellLinkIds(f[m[F.EMP.ROLE]]);
+    const linked=roleIds.map(id=>roles[id]).filter(Boolean);
+    const exception=cellText(f[m[F.EMP.EXCEPTION]]);       // 列が無ければ常に空（=例外なし）
+    employees.push({
+      id:r.recordId,
+      name:cellText(f[m[F.EMP.NAME]])||'(氏名未設定)',
+      roleName:linked.length?linked.map(x=>x.name).join('・'):'(役職未設定)',
+      hasRole:linked.length>0,
+      // 兼務対応: すべての役職がリモート可のときだけ可（1つでもOFFなら常駐）
+      remoteOK:linked.length>0&&linked.every(x=>x.remoteOK)&&exception!==V.MUST_ONSITE,
+      divisionId:firstLink(f[m[F.EMP.DIV]]),
+      memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]]),          // 担当メンバー（チーフ／アシ行に入る）
+      dependents:[]
+    });
+  });
+  // 担当メンバーのうち「在籍」の人だけを判定対象にする
+  const activeIds=new Set(employees.map(e=>e.id));
+  employees.forEach(e=>{ e.dependents=e.memberIds.filter(id=>activeIds.has(id)); });
+  return { employees, divisions };
+}
+function groupByDiv(employees){
+  const m={}; employees.forEach(e=>{ if(e.divisionId){ (m[e.divisionId]=m[e.divisionId]||[]).push(e); } }); return m;
+}
+
+/* ---- 営業日（祝日マスタを参照）---- */
+async function businessDays(ctx, monday, notes){
+  const holi={};
+  (await readAll(ctx.tables.HOLIDAY)).forEach(r=>{
+    const ts=Number(r.fields[ctx.maps.HOLIDAY[F.HOLIDAY.DATE]]);
+    if(ts) holi[dateKey(ts)]=cellText(r.fields[ctx.maps.HOLIDAY[F.HOLIDAY.NAME]])||'祝日';
+  });
+  const days=[];
+  for(let i=0;i<5;i++){
+    const date=addDays(monday,i); const h=holi[dateKey(date.getTime())];
+    if(h) notes.push(fmt(date)+'（'+F.SHIFT.DAYS[i]+'）は'+h+'のため全員「休」にします。');
+    else days.push({ idx:i, label:F.SHIFT.DAYS[i], date });
+  }
+  return days;
+}
+
+/* ---- 事前チェック（実行可能性）---- */
+function preCheck(employees, divisions, days){
+  const errors=[], warnings=[];
+  const noRole=employees.filter(e=>!e.hasRole);
+  if(noRole.length) warnings.push('役職未設定のため常駐扱い: '+noRole.map(e=>e.name).join('、'));
+  const noDiv=employees.filter(e=>!e.divisionId);
+  if(noDiv.length) warnings.push('所属Division未設定のため終日出社扱い: '+noDiv.map(e=>e.name).join('、'));
+  const byDiv=groupByDiv(employees);
+  for(const divId of Object.keys(byDiv)){
+    const div=divisions[divId], list=byDiv[divId];
+    if(!div){ warnings.push('Division座席数マスタに無い所属が設定されています（該当者は出社扱い）'); continue; }
+    const quota=Math.max(0, list.length-div.seats);
+    if(quota===0) continue;
+    const mustOnsite=list.filter(e=>!e.remoteOK).length;
+    if(mustOnsite>div.seats){ errors.push('【'+div.name+'】常駐必須'+mustOnsite+'名が席数'+div.seats+'席を超えています。物理的に成立しません。'); continue; }
+    const freeEligible=list.filter(e=>e.remoteOK&&e.dependents.length===0).length;
+    const demand=quota*days.length, supply=freeEligible*R.MAX_REMOTE_PER_WEEK;
+    if(demand>supply){ errors.push('【'+div.name+'】必要リモート延べ'+demand+'枠（毎日'+quota+'名×'+days.length+'日）に対し供給は延べ'+supply+'枠（リモート可'+freeEligible+'名×週'+R.MAX_REMOTE_PER_WEEK+'回）。席数の増加かルール緩和が必要です。'); continue; }
+    let adj=false; for(let i=1;i<days.length;i++){ if(dayDiff(days[i].date,days[i-1].date)===1) adj=true; }
+    if(adj&&quota*2>freeEligible){ errors.push('【'+div.name+'】連続リモート不可のため隣接2日で別々の'+(quota*2)+'名が必要ですが、リモート可は'+freeEligible+'名です。'); continue; }
+    if(quota>Math.floor(freeEligible/3)) warnings.push('【'+div.name+'】毎日'+quota+'名のリモートが必要（リモート可'+freeEligible+'名）でやや余裕が少なめです。');
+  }
+  return { errors, warnings };
+}
+
+/* ---- 生成（制約付き・重み付きランダム抽選＋再試行）---- */
+function canPick(e, day, days, remote){
+  if(!e.remoteOK) return false;
+  const mine=remote[e.id];
+  if(mine[day.idx]) return false;
+  if(Object.keys(mine).length>=R.MAX_REMOTE_PER_WEEK) return false;
+  for(const other of days){ if(mine[other.idx]&&Math.abs(dayDiff(other.date,day.date))===1) return false; }
+  return true;
+}
+function weightedPick(pool, recent, remote){
+  const w=pool.map(e=>1/(1+(recent[e.id]||0)+Object.keys(remote[e.id]).length*2));
+  let total=0; w.forEach(x=>total+=x);
+  let r=Math.random()*total;
+  for(let i=0;i<pool.length;i++){ r-=w[i]; if(r<=0) return pool[i]; }
+  return pool[pool.length-1];
+}
+function generate(employees, divisions, days, recent){
+  const byDiv=groupByDiv(employees); let lastFail='';
+  for(let attempt=1; attempt<=R.MAX_RETRY; attempt++){
+    const remote={}; employees.forEach(e=>{ remote[e.id]={}; });
+    let failed='';
+    outer:
+    for(const day of days){
+      for(const divId of Object.keys(byDiv)){
+        const div=divisions[divId]; if(!div) continue;
+        const list=byDiv[divId];
+        const quota=Math.max(0, list.length-div.seats);
+        if(quota<=0) continue;
+        let picked=0;
+        // フェーズ1: 担当メンバーを持たない人から抽選
+        let pool=list.filter(e=>e.dependents.length===0&&canPick(e,day,days,remote));
+        while(picked<quota&&pool.length){ const s=weightedPick(pool,recent,remote);
+          remote[s.id][day.idx]=true; picked++; pool=pool.filter(e=>e.id!==s.id); }
+        // フェーズ2: チーフ／アシスタント（担当メンバー全員がこの日リモートの場合のみ）
+        if(picked<quota){
+          let pool2=list.filter(e=>e.dependents.length>0&&canPick(e,day,days,remote)
+            &&e.dependents.every(mid=>remote[mid]&&remote[mid][day.idx]));
+          while(picked<quota&&pool2.length){ const s=weightedPick(pool2,recent,remote);
+            remote[s.id][day.idx]=true; picked++; pool2=pool2.filter(e=>e.id!==s.id); }
+        }
+        if(picked<quota){ failed=day.label+'曜の【'+div.name+'】で必要'+quota+'名に対し'+picked+'名のみ'; break outer; }
+      }
+    }
+    if(!failed) return { remote, attempts:attempt };
+    lastFail=failed;
+  }
+  throw new Error('制約を満たすシフトを'+R.MAX_RETRY+'回試行しても生成できませんでした。直近の失敗: '+lastFail+'。席数またはルールの見直しが必要です。');
+}
+
+/* ---- 過去実績（公平化用）---- */
+function countRecent(shiftRows, mShift, mondayMs){
+  const counts={};
+  shiftRows.forEach(r=>{
+    const w=Number(r.fields[mShift[F.SHIFT.WEEK]]); if(!w) return;
+    const ago=weeksAgo(w,mondayMs); if(ago<1||ago>R.FAIRNESS_LOOKBACK_WEEKS) return;
+    const empId=firstLink(r.fields[mShift[F.SHIFT.EMP]]); if(!empId) return;
+    let c=0; F.SHIFT.DAYS.forEach(d=>{ if(cellText(r.fields[mShift[d]])===V.REMOTE) c++; });
+    counts[empId]=(counts[empId]||0)+c;
+  });
+  return counts;
+}
+
+/* ---- 書き込み ---- */
+async function writeShifts(ctx, monday, employees, days, remote){
+  const m=ctx.maps.SHIFT;
+  const present={}; days.forEach(d=>{ present[d.idx]=true; });
+  const records=employees.map(e=>{
+    const fields={};
+    fields[m[F.SHIFT.WEEK]]=monday.getTime();
+    fields[m[F.SHIFT.EMP]]=WRITE.link(e.id);
+    F.SHIFT.DAYS.forEach((label,i)=>{
+      fields[m[label]]=WRITE.sel(!present[i]?V.OFF:(remote[e.id]&&remote[e.id][i]?V.REMOTE:V.OFFICE));
+    });
+    fields[m[F.SHIFT.STATUS]]=WRITE.sel(V.DRAFT);
+    return { fields };
+  });
+  for(let i=0;i<records.length;i+=200){ await ctx.tables.SHIFT.addRecords(records.slice(i,i+200)); }
+  return records.length;
+}
+async function writeWeekLog(ctx, monday, result, text){
+  const m=ctx.maps.WLOG; const fields={};
+  fields[m[F.WLOG.WEEK]]=monday.getTime();
+  fields[m[F.WLOG.RESULT]]=WRITE.sel(result);
+  fields[m[F.WLOG.LOG]]=text||'特記事項なし';
+  fields[m[F.WLOG.STATUS]]=WRITE.sel(V.DRAFT);
+  await ctx.tables.WLOG.addRecord({ fields });
+}
+
+/* ---- コンテキスト準備（テーブル＋フィールド検証）---- */
+async function buildContext(){
+  const { tables, missing }=await getTables();
+  if(missing.length) throw new Error('次のテーブルが見つかりません: '+missing.join('、')+'（テーブル名の一致を確認してください）');
+  const maps={}; for(const k of Object.keys(tables)) maps[k]=await getMap(tables[k]);
+  const problems=[];
+  checkFields(maps.ROLE,[F.ROLE.NAME,F.ROLE.REMOTE_OK],CONFIG.TABLES.ROLE,problems);
+  checkFields(maps.DIV,[F.DIV.NAME,F.DIV.SEATS],CONFIG.TABLES.DIV,problems);
+  checkFields(maps.EMP,[F.EMP.NAME,F.EMP.ROLE,F.EMP.DIV,F.EMP.MEMBERS,F.EMP.STATUS],CONFIG.TABLES.EMP,problems); // 例外フラグは任意
+  checkFields(maps.SHIFT,[F.SHIFT.WEEK,F.SHIFT.EMP,...F.SHIFT.DAYS,F.SHIFT.STATUS],CONFIG.TABLES.SHIFT,problems);
+  checkFields(maps.WLOG,[F.WLOG.WEEK,F.WLOG.RESULT,F.WLOG.LOG,F.WLOG.STATUS],CONFIG.TABLES.WLOG,problems);
+  checkFields(maps.HOLIDAY,[F.HOLIDAY.DATE,F.HOLIDAY.NAME],CONFIG.TABLES.HOLIDAY,problems);
+  if(problems.length) throw new Error(problems.join('\n'));
+  return { tables, maps };
+}
+
+/* ---- ボタン: 設定チェック ---- */
+btnTest.addEventListener('click', async ()=>{
+  clearLog(); setBusy(true);
+  try{
+    log('Baseに接続しています…','run');
+    const ctx=await buildContext();
+    log('6テーブルとフィールド名: すべて確認できました','ok');
+    if(!ctx.maps.EMP[F.EMP.EXCEPTION]) log('例外フラグ列は未作成のため、全員「例外なし」として扱います（必要になったら列を追加すれば自動反映されます）。');
+    const { employees, divisions }=await loadMasters(ctx);
+    log('社員マスタ: 在籍'+employees.length+'名 ／ Division: '+Object.keys(divisions).length+'件を読み取りました','ok');
+    const withDep=employees.filter(e=>e.dependents.length>0).length;
+    log('担当メンバーを持つチーフ／アシスタント: '+withDep+'名（担当メンバーが出社の日は常駐になります）');
+    if(employees.length===0){ log('社員データが未入力のため、書き込みテストはスキップしました。データ投入後に再実行してください。','warn'); }
+    else{
+      log('シフト表への書き込み形式を判定しています（テスト行を作成→検証→削除）…','run');
+      const fmtName=await probeWriteFormat(ctx.tables.SHIFT, ctx.maps.SHIFT, employees[0].id);
+      log('書き込みテスト: 成功（形式'+fmtName+'を採用）','ok');
+    }
+    log('設定チェック完了。「シフトを生成」を実行できます。','ok');
+  }catch(e){ log(String(e.message||e),'err'); }
+  finally{ setBusy(false); }
+});
+
+/* ---- ボタン: シフト生成 ---- */
+btnGen.addEventListener('click', async ()=>{
+  clearLog(); setBusy(true);
+  const monday=nextMonday();
+  try{
+    log('Baseに接続しています…','run');
+    const ctx=await buildContext();
+    const notes=[];
+    const days=await businessDays(ctx, monday, notes);
+    if(days.length===0){ log(fmt(monday)+'週は営業日がないため生成をスキップしました。','warn'); return; }
+    const { employees, divisions }=await loadMasters(ctx);
+    if(employees.length===0) throw new Error('在籍中の社員が社員マスタにありません。');
+    const shiftRows=await readAll(ctx.tables.SHIFT);
+    if(shiftRows.some(r=>{ const w=Number(r.fields[ctx.maps.SHIFT[F.SHIFT.WEEK]]); return w&&weeksAgo(w,monday.getTime())===0; })){
+      log(fmt(monday)+'週のシフトは既に存在するため中止しました。作り直す場合は該当週の行をシフト表から削除して再実行してください。','warn'); return;
+    }
+    const pre=preCheck(employees, divisions, days);
+    if(pre.errors.length){
+      await writeWeekLog(ctx, monday, V.ERR, pre.errors.join('\n'));
+      pre.errors.forEach(x=>log(x,'err'));
+      log('エラー内容を週管理に記録しました。','warn'); return;
+    }
+    if(!window.confirm(fmt(monday)+'週のシフト下書きを'+employees.length+'名分作成します。よろしいですか？')){ log('キャンセルしました。'); return; }
+    log('生成しています…','run');
+    const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
+    if(employees[0]) await probeWriteFormat(ctx.tables.SHIFT, ctx.maps.SHIFT, employees[0].id);
+    const plan=generate(employees, divisions, days, recent);
+    const n=await writeShifts(ctx, monday, employees, days, plan.remote);
+    const allNotes=notes.concat(pre.warnings);
+    const lines=['対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）'];
+    const byDiv=groupByDiv(employees);
+    Object.keys(byDiv).forEach(divId=>{ const dv=divisions[divId]; if(!dv) return;
+      lines.push('・'+dv.name+': 在籍'+byDiv[divId].length+'名／席'+dv.seats+' → 毎日リモート'+Math.max(0,byDiv[divId].length-dv.seats)+'名'); });
+    lines.push('（抽選試行: '+plan.attempts+'回で確定）');
+    if(allNotes.length){ lines.push('', '注意事項:'); allNotes.forEach(x=>lines.push('・'+x)); }
+    await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, lines.join('\n'));
+    log('下書きを作成しました','ok');
+    report(lines.join('\n'));
+    allNotes.forEach(x=>log(x,'warn'));
+    log('シフト表を確認し、問題なければ「週管理」のステータスを「確定」に変更してください（全体通知の自動化が発火します）。');
+  }catch(e){
+    log(String(e.message||e),'err');
+    try{ const ctx=await buildContext(); await writeWeekLog(ctx, monday, V.ERR, String(e.message||e)); }catch(_){}
+  }finally{ setBusy(false); }
+});
+
+/* ---- 初期表示 ---- */
+document.getElementById('targetWeek').textContent=fmt(nextMonday())+' 〜';
+</script>
+</body>
+</html>
