@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.1</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.2</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div class="buttons">
     <button id="btnTest">設定チェックを実行</button>
@@ -53,9 +53,9 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.1（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.2（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
- *   1) テーブル名: 役職別リモート設定一覧 ／ Division座席数マスタ
+ *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
  *      ※在籍中のメンバーだけを判定対象にします
  *   3) リモート可否: ON／OFF の単一選択（チェックボックスでも動作）
@@ -71,8 +71,8 @@
 /* ---- 設定（Base側のテーブル名・フィールド名・選択肢と完全一致させる）---- */
 const CONFIG = {
   TABLES: {
-    ROLE: '役職別リモート設定一覧', DIV: 'Division座席数マスタ', EMP: '社員マスタ',
-    SHIFT: 'シフト表', WLOG: '週管理', HOLIDAY: '祝日マスタ'
+    ROLE: '役職マスタ', DIV: 'Division座席数マスタ', EMP: '社員マスタ',
+    SHIFT: 'シフト表', WLOG: '週管理マスタ', HOLIDAY: '祝日マスタ'
   },
   FIELD: {
     ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
@@ -463,7 +463,7 @@ btnGen.addEventListener('click', async ()=>{
     log('下書きを作成しました','ok');
     report(lines.join('\n'));
     allNotes.forEach(x=>log(x,'warn'));
-    log('シフト表を確認し、問題なければ「週管理」のステータスを「確定」に変更してください（全体通知の自動化が発火します）。');
+    log('シフト表を確認し、問題なければ「週管理マスタ」のステータスを「確定」に変更してください（全体通知の自動化が発火します）。');
   }catch(e){
     log(String(e.message||e),'err');
     try{ const ctx=await buildContext(); await writeWeekLog(ctx, monday, V.ERR, String(e.message||e)); }catch(_){}
