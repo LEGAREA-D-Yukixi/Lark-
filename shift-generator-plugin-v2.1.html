@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.3</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.4</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div class="buttons">
     <button id="btnTest">設定チェックを実行</button>
@@ -53,7 +53,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.3（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.4（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -62,6 +62,7 @@
  *   4) 役職の兼務: 複数役職のうち1つでもOFFがあれば常駐扱い（安全側）
  *   5) 例外フラグ: 列が無ければ全員「なし」として扱う（任意）
  *   6) 表記: 出社→「本社」、休→「休み」に変更（冒頭のVALで調整可能）＋選択肢の自動検証を追加
+ *   7) 書き込み形式を6通りに拡張（選択肢ID解決を含む）＋失敗理由の詳細表示
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -175,6 +176,19 @@ function checkFields(map, names, tableName, problems){
   names.forEach(n=>{ if(!map[n]) problems.push('テーブル「'+tableName+'」にフィールド「'+n+'」がありません'); });
 }
 /* 単一選択フィールドに必要な選択肢が揃っているか検証する */
+/* 単一選択フィールドの「選択肢名→ID」マップを作る（ID形式での書き込み用） */
+async function getOptionMap(table){
+  const out = {};
+  const metas = await table.getFieldMetaList();
+  metas.forEach(function(meta){
+    const raw = meta.property && meta.property.options;
+    if (!Array.isArray(raw)) return;
+    const map = {};
+    raw.forEach(function(o){ const nm = o && (o.name || o.text); if (nm && o.id) map[nm] = o.id; });
+    out[meta.id] = map;
+  });
+  return out;
+}
 async function checkSelectOptions(tables, problems){
   const plan = {
     SHIFT: [ [F.SHIFT.DAYS, [V.OFFICE, V.REMOTE, V.OFF]], [[F.SHIFT.STATUS], [V.DRAFT, V.FINAL]] ],
@@ -213,33 +227,65 @@ async function readAll(table){
   return out;
 }
 
-/* ---- 書き込み形式の自動判定（環境差を吸収）---- */
-const COMBOS=[
-  { name:'A', link:id=>({recordIds:[id]}), sel:s=>s },
-  { name:'B', link:id=>[id],               sel:s=>s },
-  { name:'C', link:id=>({recordIds:[id]}), sel:s=>({text:s}) },
-  { name:'D', link:id=>[id],               sel:s=>({text:s}) }
-];
-let WRITE=COMBOS[0];
-async function probeWriteFormat(tShift, mShift, sampleEmpId){
-  for (const c of COMBOS){
-    let rid=null;
-    try{
-      const fields={};
-      fields[mShift[F.SHIFT.WEEK]]=Date.now();
-      fields[mShift[F.SHIFT.EMP]]=c.link(sampleEmpId);
-      fields[mShift[F.SHIFT.DAYS[0]]]=c.sel(V.OFFICE);
-      fields[mShift[F.SHIFT.STATUS]]=c.sel(V.DRAFT);
-      rid=await tShift.addRecord({ fields });
-      const rec=await tShift.getRecordById(rid);
-      const fl=(rec&&rec.fields)?rec.fields:rec;
-      const okLink=cellLinkIds(fl[mShift[F.SHIFT.EMP]]).includes(sampleEmpId);
-      const okSel=cellText(fl[mShift[F.SHIFT.DAYS[0]]])===V.OFFICE;
-      await tShift.deleteRecord(rid); rid=null;
-      if (okLink&&okSel){ WRITE=c; return c.name; }
-    }catch(e){ if(rid){ try{ await tShift.deleteRecord(rid); }catch(_){}} }
+/* ---- 書き込み形式の自動判定（環境差を吸収）----
+ * リンク／単一選択の書き込み形式は環境により受理形が異なるため、
+ * 6通りの形式でテスト行を書き込み→読み戻し検証→削除し、通った形式を採用します。 */
+const LINK_STYLES = {
+  obj: { label: 'リンク=recordIds形式', fn: function(id){ return { recordIds: [id] }; } },
+  arr: { label: 'リンク=ID配列形式',    fn: function(id){ return [id]; } }
+};
+const SEL_STYLES = { str: '選択=文字列', idText: '選択=ID+テキスト', text: '選択=テキストのみ' };
+let WRITE = { link: 'obj', sel: 'str' };
+
+function linkVal(id){ return LINK_STYLES[WRITE.link].fn(id); }
+function selVal(ctx, fieldId, label){
+  if (WRITE.sel === 'str') return label;
+  if (WRITE.sel === 'idText'){
+    const oid = ctx.opts && ctx.opts[fieldId] && ctx.opts[fieldId][label];
+    return oid ? { id: oid, text: label } : { text: label };
   }
-  throw new Error('シフト表へのテスト書き込みが全形式で失敗しました。シフト表のフィールド型（週=日付／社員=関連／曜日とステータス=単一選択）と選択肢（本社・リモート・休み・下書き・確定）を確認してください。');
+  return { text: label };
+}
+function normRecordId(rid){
+  if (rid && typeof rid === 'object') return rid.recordId || rid.record_id || rid.id || null;
+  return rid || null;
+}
+function recordFields(rec){
+  if (!rec) return {};
+  if (rec.fields) return rec.fields;
+  if (rec.record && rec.record.fields) return rec.record.fields;
+  return rec;
+}
+async function probeWriteFormat(ctx, sampleEmpId){
+  const tShift = ctx.tables.SHIFT, m = ctx.maps.SHIFT;
+  const fails = [];
+  for (const lk of Object.keys(LINK_STYLES)){
+    for (const sl of Object.keys(SEL_STYLES)){
+      WRITE = { link: lk, sel: sl };
+      const tag = LINK_STYLES[lk].label + '・' + SEL_STYLES[sl];
+      let rid = null;
+      try{
+        const fields = {};
+        fields[m[F.SHIFT.WEEK]] = Date.now();
+        fields[m[F.SHIFT.EMP]] = linkVal(sampleEmpId);
+        fields[m[F.SHIFT.DAYS[0]]] = selVal(ctx, m[F.SHIFT.DAYS[0]], V.OFFICE);
+        fields[m[F.SHIFT.STATUS]] = selVal(ctx, m[F.SHIFT.STATUS], V.DRAFT);
+        rid = normRecordId(await tShift.addRecord({ fields: fields }));
+        if (!rid) throw new Error('recordIdが取得できませんでした');
+        const fl = recordFields(await tShift.getRecordById(rid));
+        const gotLink = cellLinkIds(fl[m[F.SHIFT.EMP]]);
+        const gotSel = cellText(fl[m[F.SHIFT.DAYS[0]]]);
+        await tShift.deleteRecord(rid); rid = null;
+        if (gotLink.indexOf(sampleEmpId) !== -1 && gotSel === V.OFFICE) return tag;
+        fails.push('[' + tag + '] 検証NG: 社員=' + JSON.stringify(fl[m[F.SHIFT.EMP]]).slice(0, 60) +
+          ' / 月=' + JSON.stringify(fl[m[F.SHIFT.DAYS[0]]]).slice(0, 40));
+      }catch(e){
+        if (rid){ try{ await tShift.deleteRecord(rid); }catch(ignore){} }
+        fails.push('[' + tag + '] 例外: ' + String((e && e.message) || e).slice(0, 90));
+      }
+    }
+  }
+  throw new Error('シフト表へのテスト書き込みが全形式で失敗しました。以下の詳細をそのまま共有してください。\n' + fails.join('\n'));
 }
 
 /* ---- マスタ読み込み ---- */
@@ -392,11 +438,11 @@ async function writeShifts(ctx, monday, employees, days, remote){
   const records=employees.map(e=>{
     const fields={};
     fields[m[F.SHIFT.WEEK]]=monday.getTime();
-    fields[m[F.SHIFT.EMP]]=WRITE.link(e.id);
+    fields[m[F.SHIFT.EMP]]=linkVal(e.id);
     F.SHIFT.DAYS.forEach((label,i)=>{
-      fields[m[label]]=WRITE.sel(!present[i]?V.OFF:(remote[e.id]&&remote[e.id][i]?V.REMOTE:V.OFFICE));
+      fields[m[label]]=selVal(ctx, m[label], !present[i]?V.OFF:(remote[e.id]&&remote[e.id][i]?V.REMOTE:V.OFFICE));
     });
-    fields[m[F.SHIFT.STATUS]]=WRITE.sel(V.DRAFT);
+    fields[m[F.SHIFT.STATUS]]=selVal(ctx, m[F.SHIFT.STATUS], V.DRAFT);
     return { fields };
   });
   for(let i=0;i<records.length;i+=200){ await ctx.tables.SHIFT.addRecords(records.slice(i,i+200)); }
@@ -405,9 +451,9 @@ async function writeShifts(ctx, monday, employees, days, remote){
 async function writeWeekLog(ctx, monday, result, text){
   const m=ctx.maps.WLOG; const fields={};
   fields[m[F.WLOG.WEEK]]=monday.getTime();
-  fields[m[F.WLOG.RESULT]]=WRITE.sel(result);
+  fields[m[F.WLOG.RESULT]]=selVal(ctx, m[F.WLOG.RESULT], result);
   fields[m[F.WLOG.LOG]]=text||'特記事項なし';
-  fields[m[F.WLOG.STATUS]]=WRITE.sel(V.DRAFT);
+  fields[m[F.WLOG.STATUS]]=selVal(ctx, m[F.WLOG.STATUS], V.DRAFT);
   await ctx.tables.WLOG.addRecord({ fields });
 }
 
@@ -425,7 +471,9 @@ async function buildContext(){
   checkFields(maps.HOLIDAY,[F.HOLIDAY.DATE,F.HOLIDAY.NAME],CONFIG.TABLES.HOLIDAY,problems);
   await checkSelectOptions(tables, problems);
   if(problems.length) throw new Error(problems.join('\n'));
-  return { tables, maps };
+  const opts = {};
+  Object.assign(opts, await getOptionMap(tables.SHIFT), await getOptionMap(tables.WLOG));
+  return { tables, maps, opts };
 }
 
 /* ---- ボタン: 設定チェック ---- */
@@ -443,8 +491,8 @@ btnTest.addEventListener('click', async ()=>{
     if(employees.length===0){ log('社員データが未入力のため、書き込みテストはスキップしました。データ投入後に再実行してください。','warn'); }
     else{
       log('シフト表への書き込み形式を判定しています（テスト行を作成→検証→削除）…','run');
-      const fmtName=await probeWriteFormat(ctx.tables.SHIFT, ctx.maps.SHIFT, employees[0].id);
-      log('書き込みテスト: 成功（形式'+fmtName+'を採用）','ok');
+      const fmtName=await probeWriteFormat(ctx, employees[0].id);
+      log('書き込みテスト: 成功（'+fmtName+'を採用）','ok');
     }
     log('設定チェック完了。「シフトを生成」を実行できます。','ok');
   }catch(e){ log(String(e.message||e),'err'); }
@@ -476,7 +524,7 @@ btnGen.addEventListener('click', async ()=>{
     if(!window.confirm(fmt(monday)+'週のシフト下書きを'+employees.length+'名分作成します。よろしいですか？')){ log('キャンセルしました。'); return; }
     log('生成しています…','run');
     const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
-    if(employees[0]) await probeWriteFormat(ctx.tables.SHIFT, ctx.maps.SHIFT, employees[0].id);
+    if(employees[0]) await probeWriteFormat(ctx, employees[0].id);
     const plan=generate(employees, divisions, days, recent);
     const n=await writeShifts(ctx, monday, employees, days, plan.remote);
     const allNotes=notes.concat(pre.warnings);
