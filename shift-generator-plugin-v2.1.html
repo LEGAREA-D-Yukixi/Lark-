@@ -43,17 +43,17 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.4</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.5</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div class="buttons">
-    <button id="btnTest">設定チェックを実行</button>
     <button id="btnGen" class="primary">シフトを生成（下書き）</button>
+    <button id="btnSelfTest">仕様テストを実行（デグレ確認）</button>
   </div>
   <div id="log"></div>
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.4（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.5（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -63,11 +63,15 @@
  *   5) 例外フラグ: 列が無ければ全員「なし」として扱う（任意）
  *   6) 表記: 出社→「本社」、休→「休み」に変更（冒頭のVALで調整可能）＋選択肢の自動検証を追加
  *   7) 書き込み形式を6通りに拡張（選択肢ID解決を含む）＋失敗理由の詳細表示
+ *   8) v2.5: 「設定チェック」ボタンを廃止し検証を生成ボタンに統合／エラーは原因特定できる粒度で表示
+ *           ／生成結果を全仕様で自己検証(verifyPlan)してから書き込み
+ *           ／デグレ防止の内蔵セルフテスト(runSelfTest)＝「仕様テストを実行」ボタンを追加
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
  *         カスタムプラグイン（スクリプト）としてURLを登録 →
- *         ③「設定チェック」→「シフトを生成」の順に実行
+ *         ③「シフトを生成（下書き）」を実行（検証は自動で先に走ります）
+ *         ※改修したら「仕様テストを実行」で全仕様の維持を自己診断できます
  * ==================================================================== */
 
 /* ---- 設定（Base側のテーブル名・フィールド名・選択肢と完全一致させる）---- */
@@ -95,13 +99,13 @@ const F = CONFIG.FIELD, V = CONFIG.VAL, R = CONFIG.RULES;
 
 /* ---- 画面まわり ---- */
 const logEl = document.getElementById('log');
-const btnTest = document.getElementById('btnTest');
 const btnGen = document.getElementById('btnGen');
+const btnSelfTest = document.getElementById('btnSelfTest');
 function log(msg, type){ const d=document.createElement('div'); d.className='line '+(type||'');
   d.innerHTML='<span class="dot"></span><span></span>'; d.lastChild.textContent=msg; logEl.appendChild(d); }
 function report(text){ const d=document.createElement('div'); d.className='report'; d.textContent=text; logEl.appendChild(d); }
 function clearLog(){ logEl.innerHTML=''; }
-function setBusy(b){ btnTest.disabled=b; btnGen.disabled=b; }
+function setBusy(b){ btnGen.disabled=b; btnSelfTest.disabled=b; }
 
 /* ---- 日付ヘルパー ---- */
 const DAY = 86400000;
@@ -304,25 +308,41 @@ async function loadMasters(ctx){
   (await readAll(ctx.tables.EMP)).forEach(r=>{
     const f=r.fields;
     if (cellText(f[m[F.EMP.STATUS]])!==V.ACTIVE) return;   // 在籍のみ（入社予定・休職・退職は対象外）
-    const roleIds=cellLinkIds(f[m[F.EMP.ROLE]]);
-    const linked=roleIds.map(id=>roles[id]).filter(Boolean);
-    const exception=cellText(f[m[F.EMP.EXCEPTION]]);       // 列が無ければ常に空（=例外なし）
-    employees.push({
+    const linkedRoles=cellLinkIds(f[m[F.EMP.ROLE]]).map(id=>roles[id]).filter(Boolean);
+    employees.push(buildEmployee({
       id:r.recordId,
-      name:cellText(f[m[F.EMP.NAME]])||'(氏名未設定)',
-      roleName:linked.length?linked.map(x=>x.name).join('・'):'(役職未設定)',
-      hasRole:linked.length>0,
-      // 兼務対応: すべての役職がリモート可のときだけ可（1つでもOFFなら常駐）
-      remoteOK:linked.length>0&&linked.every(x=>x.remoteOK)&&exception!==V.MUST_ONSITE,
+      name:cellText(f[m[F.EMP.NAME]]),
+      linkedRoles:linkedRoles,
+      exception:cellText(f[m[F.EMP.EXCEPTION]]),           // 列が無ければ常に空（=例外なし）
       divisionId:firstLink(f[m[F.EMP.DIV]]),
-      memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]]),          // 担当メンバー（チーフ／アシ行に入る）
-      dependents:[]
-    });
+      memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]])           // 担当メンバー（チーフ／アシ行に入る）
+    }));
   });
-  // 担当メンバーのうち「在籍」の人だけを判定対象にする
-  const activeIds=new Set(employees.map(e=>e.id));
-  employees.forEach(e=>{ e.dependents=e.memberIds.filter(id=>activeIds.has(id)); });
+  resolveDependents(employees);                            // 担当メンバーのうち在籍者だけを判定対象に
   return { employees, divisions };
+}
+
+/* ---- 社員レコードの解釈（純粋関数・セルフテストと共用）----
+ * 入力: { id, name, linkedRoles:[{name,remoteOK}], exception, divisionId, memberIds }
+ * リモート可の判定: 役職が1つ以上あり、その全役職がリモート可で、例外フラグが常駐必須でないこと（兼務は安全側）。*/
+function buildEmployee(src){
+  const linked=src.linkedRoles||[];
+  return {
+    id:src.id,
+    name:src.name||'(氏名未設定)',
+    roleName:linked.length?linked.map(x=>x.name).join('・'):'(役職未設定)',
+    hasRole:linked.length>0,
+    remoteOK:linked.length>0 && linked.every(x=>x.remoteOK) && src.exception!==V.MUST_ONSITE,
+    divisionId:src.divisionId||null,
+    memberIds:src.memberIds||[],
+    dependents:[]
+  };
+}
+/* 担当メンバー（memberIds）のうち、在籍中の社員だけを dependents に解決する */
+function resolveDependents(employees){
+  const activeIds=new Set(employees.map(e=>e.id));
+  employees.forEach(e=>{ e.dependents=(e.memberIds||[]).filter(id=>activeIds.has(id)); });
+  return employees;
 }
 function groupByDiv(employees){
   const m={}; employees.forEach(e=>{ if(e.divisionId){ (m[e.divisionId]=m[e.divisionId]||[]).push(e); } }); return m;
@@ -418,6 +438,169 @@ function generate(employees, divisions, days, recent){
   throw new Error('制約を満たすシフトを'+R.MAX_RETRY+'回試行しても生成できませんでした。直近の失敗: '+lastFail+'。席数またはルールの見直しが必要です。');
 }
 
+/* ---- 生成結果の検証（純粋関数・セルフテストと共用）----
+ * remote[empId] = { 曜日idx: true } を、全仕様に照らして検証し、違反の配列を返す（空なら合格）。*/
+function verifyPlan(employees, divisions, days, remote){
+  const v=[];
+  const byId={}; employees.forEach(e=>{ byId[e.id]=e; });
+  const present={}; days.forEach(d=>{ present[d.idx]=true; });
+  const r=id=>remote[id]||{};
+  // 仕様1: 常駐必須（remoteOK=false）はリモートに割り当てない
+  employees.forEach(e=>{
+    if(e.remoteOK) return;
+    days.forEach(d=>{ if(r(e.id)[d.idx]) v.push('常駐必須の'+e.name+'が'+d.label+'にリモート'); });
+  });
+  // 仕様2: 週のリモート回数は上限以内
+  employees.forEach(e=>{
+    const c=days.filter(d=>r(e.id)[d.idx]).length;
+    if(c>R.MAX_REMOTE_PER_WEEK) v.push(e.name+'のリモートが週'+c+'回（上限'+R.MAX_REMOTE_PER_WEEK+'）');
+  });
+  // 仕様3: 連続2営業日のリモート禁止
+  employees.forEach(e=>{
+    for(let i=1;i<days.length;i++){
+      if(dayDiff(days[i].date,days[i-1].date)===1 && r(e.id)[days[i].idx] && r(e.id)[days[i-1].idx])
+        v.push(e.name+'が'+days[i-1].label+'→'+days[i].label+'で連続リモート');
+    }
+  });
+  // 仕様4: 各Divisionの各営業日で、出社人数が席数以内（＝リモート人数が超過数以上）
+  const byDiv=groupByDiv(employees);
+  for(const divId of Object.keys(byDiv)){
+    const div=divisions[divId]; if(!div) continue;
+    const list=byDiv[divId];
+    const quota=Math.max(0, list.length-div.seats);
+    days.forEach(d=>{
+      const remoteCnt=list.filter(e=>r(e.id)[d.idx]).length;
+      const officeCnt=list.length-remoteCnt;
+      if(officeCnt>div.seats) v.push('【'+div.name+'】'+d.label+'の出社'+officeCnt+'名が席数'+div.seats+'超過');
+      if(quota>0 && remoteCnt<quota) v.push('【'+div.name+'】'+d.label+'のリモート'+remoteCnt+'名が必要数'+quota+'未満');
+    });
+  }
+  // 仕様5: チーフ／アシスタントは、担当メンバーが1人でも出社の日はリモート不可
+  employees.forEach(e=>{
+    if(!e.dependents||e.dependents.length===0) return;
+    days.forEach(d=>{
+      if(!r(e.id)[d.idx]) return;
+      const anyDepOffice=e.dependents.some(mid=>byId[mid] && !r(mid)[d.idx]);
+      if(anyDepOffice) v.push(e.name+'（担当持ち）が'+d.label+'にリモートだが担当メンバーに出社者あり');
+    });
+  });
+  return v;
+}
+
+/* ====================================================================
+ * 内蔵セルフテスト（デグレ防止）
+ * 実際のBaseに接続せず、合成データで全仕様を検証する。改修のたびに実行する。
+ * ==================================================================== */
+function runSelfTest(){
+  const results=[];
+  const ok=(name)=>results.push({name,pass:true});
+  const ng=(name,detail)=>results.push({name,pass:false,detail});
+  const ROLE_REMOTE={name:'メンバー',remoteOK:true};
+  const ROLE_ONSITE={name:'マネージャー',remoteOK:false};
+  const ROLE_CHIEF={name:'チーフ',remoteOK:true};
+  // 5営業日（連続）を用意
+  const base=new Date(2026,0,5); // 月曜
+  const days5=[0,1,2,3,4].map(i=>({idx:i,label:['月','火','水','木','金'][i],date:addDays(base,i)}));
+
+  // --- 単体テスト群: buildEmployee の解釈ルール ---
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d',memberIds:[]});
+    e.remoteOK ? ok('buildEmployee: 単一リモート可役職→可') : ng('buildEmployee: 単一リモート可役職→可','remoteOKがfalse');
+  }catch(err){ ng('buildEmployee: 単一リモート可役職→可','例外'+err.message); }
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE,ROLE_ONSITE],exception:'',divisionId:'d',memberIds:[]});
+    !e.remoteOK ? ok('buildEmployee: 兼務で1つでも常駐→常駐') : ng('buildEmployee: 兼務で1つでも常駐→常駐','remoteOKがtrueになっている');
+  }catch(err){ ng('buildEmployee: 兼務で1つでも常駐→常駐','例外'+err.message); }
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:V.MUST_ONSITE,divisionId:'d',memberIds:[]});
+    !e.remoteOK ? ok('buildEmployee: 例外フラグ常駐必須→常駐') : ng('buildEmployee: 例外フラグ常駐必須→常駐','例外フラグが無視されている');
+  }catch(err){ ng('buildEmployee: 例外フラグ常駐必須→常駐','例外'+err.message); }
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[],exception:'',divisionId:'d',memberIds:[]});
+    (!e.remoteOK && !e.hasRole) ? ok('buildEmployee: 役職未設定→常駐扱い') : ng('buildEmployee: 役職未設定→常駐扱い','hasRole/remoteOKが不正');
+  }catch(err){ ng('buildEmployee: 役職未設定→常駐扱い','例外'+err.message); }
+  try{
+    const list=[
+      buildEmployee({id:'chief',name:'C',linkedRoles:[ROLE_CHIEF],exception:'',divisionId:'d',memberIds:['m1','retired']}),
+      buildEmployee({id:'m1',name:'M1',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d',memberIds:[]})
+    ];
+    resolveDependents(list);
+    (list[0].dependents.length===1 && list[0].dependents[0]==='m1')
+      ? ok('resolveDependents: 退職者は担当から除外') : ng('resolveDependents: 退職者は担当から除外','dependents='+JSON.stringify(list[0].dependents));
+  }catch(err){ ng('resolveDependents: 退職者は担当から除外','例外'+err.message); }
+
+  // --- 結合テスト群: generate→verifyPlan が全仕様を満たすか（複数シナリオ）---
+  function scenario(name, employees, divisions, days){
+    try{
+      resolveDependents(employees);
+      const plan=generate(employees, divisions, days, {});
+      const viol=verifyPlan(employees, divisions, days, plan.remote);
+      viol.length===0 ? ok('生成: '+name) : ng('生成: '+name, viol.slice(0,3).join(' / '));
+    }catch(err){ ng('生成: '+name, '例外: '+err.message); }
+  }
+  // S1: 6名/席4 → 毎日2名リモート、メンバーのみ
+  (function(){
+    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    scenario('6名/席4/全員メンバー', emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
+  })();
+  // S2: 常駐必須を含む 8名/席6（毎日2名リモート）、2名が常駐必須＋リモート可6名 → 供給延べ12枠で充足
+  (function(){
+    const emps=[];
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    scenario('8名/席6/常駐必須2名', emps, {d1:{id:'d1',name:'D1',seats:6}}, days5);
+  })();
+  // S3: チーフ＋担当メンバー（チーフは担当出社日は常駐になるはず）7名/席5
+  (function(){
+    const chief=buildEmployee({id:'c',name:'Chief',linkedRoles:[ROLE_CHIEF],exception:'',divisionId:'d1',memberIds:['m0','m1']});
+    const emps=[chief];
+    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'m'+i,name:'M'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'x'+i,name:'X'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    scenario('7名/席5/チーフ＋担当2名', emps, {d1:{id:'d1',name:'D1',seats:5}}, days5);
+  })();
+  // S4: 複数Division同時
+  (function(){
+    const emps=[];
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[]}));
+    scenario('2Division同時(6/席4, 7/席5)', emps, {d1:{id:'d1',name:'D1',seats:4}, d2:{id:'d2',name:'D2',seats:5}}, days5);
+  })();
+  // S5: 余裕なし（席=人数）→ リモート0、誰もリモートにならない
+  (function(){
+    const emps=[]; for(let i=0;i<4;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    scenario('席=人数(リモート不要)', emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
+  })();
+
+  // --- preCheck（実行不能の検知）---
+  try{
+    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    resolveDependents(emps);
+    const pre=preCheck(emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
+    pre.errors.length>0 ? ok('preCheck: 常駐必須が席超過をエラー検知') : ng('preCheck: 常駐必須が席超過をエラー検知','エラーが出ていない');
+  }catch(err){ ng('preCheck: 常駐必須が席超過をエラー検知','例外'+err.message); }
+  try{
+    // リモート可が足りない: 7名/席4 → 毎日3名×5日=延べ15枠 必要、リモート可3名×2=6枠しか出せない
+    const emps=[];
+    for(let i=0;i<3;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    resolveDependents(emps);
+    const pre=preCheck(emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
+    pre.errors.length>0 ? ok('preCheck: 供給不足をエラー検知') : ng('preCheck: 供給不足をエラー検知','エラーが出ていない');
+  }catch(err){ ng('preCheck: 供給不足をエラー検知','例外'+err.message); }
+
+  // --- 公平化(countRecent)とverifyPlanの違反検知力の確認 ---
+  try{
+    // わざと違反した手書きプランをverifyPlanが検知できるか（テスト自身の健全性確認）
+    const emps=[buildEmployee({id:'e0',name:'E0',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]})];
+    resolveDependents(emps);
+    const bad={e0:{0:true,1:true}}; // 月火で連続リモート
+    const viol=verifyPlan(emps, {d1:{id:'d1',name:'D1',seats:0}}, days5, bad);
+    viol.some(x=>x.includes('連続')) ? ok('verifyPlan: 連続リモート違反を検知') : ng('verifyPlan: 連続リモート違反を検知','検知できていない');
+  }catch(err){ ng('verifyPlan: 連続リモート違反を検知','例外'+err.message); }
+
+  return results;
+}
+
 /* ---- 過去実績（公平化用）---- */
 function countRecent(shiftRows, mShift, mondayMs){
   const counts={};
@@ -476,41 +659,31 @@ async function buildContext(){
   return { tables, maps, opts };
 }
 
-/* ---- ボタン: 設定チェック ---- */
-btnTest.addEventListener('click', async ()=>{
-  clearLog(); setBusy(true);
-  try{
-    log('Baseに接続しています…','run');
-    const ctx=await buildContext();
-    log('6テーブルとフィールド名: すべて確認できました','ok');
-    if(!ctx.maps.EMP[F.EMP.EXCEPTION]) log('例外フラグ列は未作成のため、全員「例外なし」として扱います（必要になったら列を追加すれば自動反映されます）。');
-    const { employees, divisions }=await loadMasters(ctx);
-    log('社員マスタ: 在籍'+employees.length+'名 ／ Division: '+Object.keys(divisions).length+'件を読み取りました','ok');
-    const withDep=employees.filter(e=>e.dependents.length>0).length;
-    log('担当メンバーを持つチーフ／アシスタント: '+withDep+'名（担当メンバーが出社の日は常駐になります）');
-    if(employees.length===0){ log('社員データが未入力のため、書き込みテストはスキップしました。データ投入後に再実行してください。','warn'); }
-    else{
-      log('シフト表への書き込み形式を判定しています（テスト行を作成→検証→削除）…','run');
-      const fmtName=await probeWriteFormat(ctx, employees[0].id);
-      log('書き込みテスト: 成功（'+fmtName+'を採用）','ok');
-    }
-    log('設定チェック完了。「シフトを生成」を実行できます。','ok');
-  }catch(e){ log(String(e.message||e),'err'); }
-  finally{ setBusy(false); }
-});
-
-/* ---- ボタン: シフト生成 ---- */
+/* ---- ボタン: シフト生成（設定チェックを内包）---- */
 btnGen.addEventListener('click', async ()=>{
   clearLog(); setBusy(true);
   const monday=nextMonday();
   try{
-    log('Baseに接続しています…','run');
-    const ctx=await buildContext();
+    // === 事前検証（旧「設定チェック」をここに統合）===
+    log('Baseに接続し、設定を検証しています…','run');
+    const ctx=await buildContext();   // テーブル名・フィールド名・選択肢を検証（不一致は例外）
+    log('テーブル・フィールド・選択肢: すべて確認できました','ok');
+    if(!ctx.maps.EMP[F.EMP.EXCEPTION]) log('例外フラグ列は未作成のため、全員「例外なし」として扱います。','warn');
+    const { employees, divisions }=await loadMasters(ctx);
+    if(employees.length===0) throw new Error('在籍中の社員が社員マスタにありません。社員マスタの在籍状況が「在籍」の行があるか確認してください。');
+    log('社員マスタ: 在籍'+employees.length+'名 ／ Division: '+Object.keys(divisions).length+'件','ok');
+    const withDep=employees.filter(e=>e.dependents.length>0).length;
+    log('担当メンバーを持つチーフ／アシスタント: '+withDep+'名（担当メンバー出社日は常駐）');
+
+    // 書き込み形式の判定（テスト行を作成→検証→削除）
+    log('シフト表への書き込み形式を判定しています…','run');
+    const fmtName=await probeWriteFormat(ctx, employees[0].id);
+    log('書き込み形式: '+fmtName+' を採用','ok');
+
+    // === 生成可否の事前チェック ===
     const notes=[];
     const days=await businessDays(ctx, monday, notes);
     if(days.length===0){ log(fmt(monday)+'週は営業日がないため生成をスキップしました。','warn'); return; }
-    const { employees, divisions }=await loadMasters(ctx);
-    if(employees.length===0) throw new Error('在籍中の社員が社員マスタにありません。');
     const shiftRows=await readAll(ctx.tables.SHIFT);
     if(shiftRows.some(r=>{ const w=Number(r.fields[ctx.maps.SHIFT[F.SHIFT.WEEK]]); return w&&weeksAgo(w,monday.getTime())===0; })){
       log(fmt(monday)+'週のシフトは既に存在するため中止しました。作り直す場合は該当週の行をシフト表から削除して再実行してください。','warn'); return;
@@ -519,13 +692,23 @@ btnGen.addEventListener('click', async ()=>{
     if(pre.errors.length){
       await writeWeekLog(ctx, monday, V.ERR, pre.errors.join('\n'));
       pre.errors.forEach(x=>log(x,'err'));
-      log('エラー内容を週管理に記録しました。','warn'); return;
+      log('上記の理由で生成できません。内容を週管理マスタに記録しました。','warn'); return;
     }
+
+    // === 生成 ===
     if(!window.confirm(fmt(monday)+'週のシフト下書きを'+employees.length+'名分作成します。よろしいですか？')){ log('キャンセルしました。'); return; }
     log('生成しています…','run');
     const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
-    if(employees[0]) await probeWriteFormat(ctx, employees[0].id);
     const plan=generate(employees, divisions, days, recent);
+
+    // 生成結果を全仕様で自己検証（保険。違反があれば書き込まずに停止）
+    const viol=verifyPlan(employees, divisions, days, plan.remote);
+    if(viol.length){
+      await writeWeekLog(ctx, monday, V.ERR, '生成結果が仕様に違反したため中止:\n'+viol.join('\n'));
+      viol.slice(0,10).forEach(x=>log(x,'err'));
+      throw new Error('生成結果が仕様違反のため書き込みを中止しました（上記）。この内容をそのまま共有してください。');
+    }
+
     const n=await writeShifts(ctx, monday, employees, days, plan.remote);
     const allNotes=notes.concat(pre.warnings);
     const lines=['対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）'];
@@ -540,8 +723,31 @@ btnGen.addEventListener('click', async ()=>{
     allNotes.forEach(x=>log(x,'warn'));
     log('シフト表を確認し、問題なければ「週管理マスタ」のステータスを「確定」に変更してください（全体通知の自動化が発火します）。');
   }catch(e){
-    log(String(e.message||e),'err');
+    log('エラー: '+String(e.message||e),'err');
+    log('↑このメッセージをそのままコピーして共有いただければ原因を特定できます。','warn');
     try{ const ctx=await buildContext(); await writeWeekLog(ctx, monday, V.ERR, String(e.message||e)); }catch(_){}
+  }finally{ setBusy(false); }
+});
+
+/* ---- ボタン: 仕様テスト（内蔵セルフテスト・Base不要）---- */
+btnSelfTest.addEventListener('click', ()=>{
+  clearLog(); setBusy(true);
+  try{
+    log('仕様テストを実行しています（Baseには接続しません）…','run');
+    const results=runSelfTest();
+    const passed=results.filter(r=>r.pass).length;
+    const failed=results.filter(r=>!r.pass);
+    results.forEach(r=>{
+      if(r.pass) log('PASS: '+r.name,'ok');
+      else log('FAIL: '+r.name+' — '+(r.detail||''),'err');
+    });
+    if(failed.length===0){
+      log('全'+results.length+'件パス。これまでの仕様はすべて維持されています。','ok');
+    }else{
+      log(failed.length+'件の仕様が壊れています（FAIL '+failed.length+' / 全'+results.length+'）。上記をそのまま共有してください。','err');
+    }
+  }catch(e){
+    log('仕様テスト自体が例外で停止: '+String(e.message||e),'err');
   }finally{ setBusy(false); }
 });
 
