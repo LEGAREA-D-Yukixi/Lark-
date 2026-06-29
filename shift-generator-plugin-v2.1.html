@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.9</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v3.0</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div id="divPicker" style="display:none; margin-bottom:10px;">
     <label style="display:block; font-size:12px; color:var(--sub); margin-bottom:4px;">対象Division</label>
@@ -57,7 +57,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.9（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.0（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -81,6 +81,8 @@
  *  12) v2.9: シフト表の「ステータス」を廃止（方式1では週管理マスタで確定管理するため不要）
  *           ／書き込み対象列をSHIFT_WRITE_FIELDSに一元化し、生成前に列の存在を点検→欠落は明確に表示
  *           ／書き込み列と検証の整合をセルフテストで担保（列欠落のデグレを事前検知）
+ *  13) v3.0: 座席数不足エラーを「あと◯席（合計◯席）必要」と端的に表示（requiredSeatsで必要席数を計算）
+ *           ／席を増やしても解けない場合はリモート可能人数の不足を案内／requiredSeatsのセルフテスト追加
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -425,19 +427,50 @@ function preCheck(employees, divisions, days){
     if(!div){ warnings.push('Division座席数マスタに無い所属が設定されています（該当者は出社扱い）'); continue; }
     const quota=Math.max(0, list.length-div.seats);
     if(quota===0) continue;
+    const N=list.length;
     const mustOnsite=list.filter(e=>!e.remoteOK).length;
-    if(mustOnsite>div.seats){ errors.push('【'+div.name+'】常駐必須'+mustOnsite+'名が席数'+div.seats+'席を超えています。物理的に成立しません。'); continue; }
     const freeEligible=list.filter(e=>e.remoteOK&&e.dependents.length===0).length;
-    const demand=quota*days.length, supply=freeEligible*R.MAX_REMOTE_PER_WEEK;
-    if(demand>supply){ errors.push('【'+div.name+'】必要リモート延べ'+demand+'枠（毎日'+quota+'名×'+days.length+'日）に対し供給は延べ'+supply+'枠（リモート可'+freeEligible+'名×週'+R.MAX_REMOTE_PER_WEEK+'回）。席数の増加かルール緩和が必要です。'); continue; }
-    let adj=false; for(let i=1;i<days.length;i++){ if(dayDiff(days[i].date,days[i-1].date)===1) adj=true; }
-    if(adj&&quota*2>freeEligible){ errors.push('【'+div.name+'】連続リモート不可のため隣接2日で別々の'+(quota*2)+'名が必要ですが、リモート可は'+freeEligible+'名です。'); continue; }
+    let hasAdj=false; for(let i=1;i<days.length;i++){ if(dayDiff(days[i].date,days[i-1].date)===1) hasAdj=true; }
+
+    // 3制約のいずれかに抵触する場合、必要席数を計算して端的に案内する
+    const violatesOnsite = mustOnsite>div.seats;
+    const violatesSupply = quota*days.length > freeEligible*R.MAX_REMOTE_PER_WEEK;
+    const violatesAdj = hasAdj && quota*2>freeEligible;
+    if(violatesOnsite || violatesSupply || violatesAdj){
+      const req=requiredSeats(N, mustOnsite, freeEligible, days.length, hasAdj, div.seats);
+      if(req.feasible){
+        errors.push('【'+div.name+'】このままでは席数が不足します。あと'+req.add+'席（合計'+req.seats+'席）あれば全員のシフトを作成できます。（在籍'+N+'名／現在'+div.seats+'席）');
+      }else{
+        // 席を増やしても解けない＝リモート可能な人が少なすぎる（常駐必須が多い等）
+        const needRemote=Math.ceil((N-div.seats)*days.length/R.MAX_REMOTE_PER_WEEK);
+        errors.push('【'+div.name+'】席数を増やしても成立しません。リモート可能な担当なしメンバーが'+freeEligible+'名では不足です（目安として'+needRemote+'名以上必要）。席数の増加に加え、常駐必須役職の見直しが必要です。（在籍'+N+'名／現在'+div.seats+'席／常駐必須'+mustOnsite+'名）');
+      }
+      continue;
+    }
     if(quota>Math.floor(freeEligible/3)) warnings.push('【'+div.name+'】毎日'+quota+'名のリモートが必要（リモート可'+freeEligible+'名）でやや余裕が少なめです。');
   }
   return { errors, warnings };
 }
 
-/* ---- 生成（制約付き・重み付きランダム抽選＋再試行）---- */
+/* ---- 必要席数の計算（純粋関数・セルフテストと共用）----
+ * 席数を増やしていき、3つの制約をすべて満たす最小の席数を返す。
+ *   N=在籍, M=常駐必須人数, E=リモート可(担当なし)人数, D=営業日数, hasAdj=隣接営業日あり
+ *   制約1: 常駐必須 M ≤ 席数（常駐者が座れる）
+ *   制約2: quota×D ≤ E×上限（週の延べ供給。quota=max(0,N-席数)）
+ *   制約3: hasAdjなら quota×2 ≤ E（連続リモート不可で隣接2日に別々の人が必要）
+ * 戻り値 { feasible:解の有無, seats:必要な合計席数, add:現席数からの追加席数 }。
+ * 席数をNまで増やしても解が無い場合（=リモート可が少なすぎる等）はfeasible:false。*/
+function requiredSeats(N, M, E, D, hasAdj, currentSeats){
+  const cap=R.MAX_REMOTE_PER_WEEK;
+  for(let s=Math.max(0,currentSeats); s<=N; s++){
+    const quota=Math.max(0, N-s);
+    const ok1 = M<=s;
+    const ok2 = quota*D <= E*cap;
+    const ok3 = !hasAdj || quota*2 <= E;
+    if(ok1 && ok2 && ok3) return { feasible:true, seats:s, add:Math.max(0, s-currentSeats) };
+  }
+  return { feasible:false, seats:N, add:Math.max(0, N-currentSeats) };
+}
 function canPick(e, day, days, remote){
   if(!e.remoteOK) return false;
   const mine=remote[e.id];
@@ -754,6 +787,26 @@ function runSelfTest(){
     // SHIFT設定自体にSTATUSキーが残っていないこと（設定とコードの不整合防止）
     ('STATUS' in F.SHIFT)===false ? ok('CONFIG: シフト表設定からSTATUSキーが削除済み') : ng('CONFIG: シフト表設定からSTATUSキーが削除済み','STATUSキーが残存');
   }catch(err){ ng('CONFIG: シフト表設定からSTATUSキーが削除済み','例外'+err.message); }
+
+  // --- v3.0: requiredSeats（必要席数の計算）---
+  try{
+    // 7名/席4・全員リモート可・5営業日・隣接あり: quota=3, supply=4*2=8, demand=3*5=15>8 → 席不足
+    // 席を増やす: s=5でquota=2,demand=10>8 NG; s=6でquota=1,demand=5<=12 OK かつ 連続2<=6 OK → 合計6席(+2)
+    const r=requiredSeats(7, 0, 4, 5, true, 4);
+    (r.feasible && r.seats===6 && r.add===2) ? ok('requiredSeats: 7名/席4→合計6席(+2)') : ng('requiredSeats: 7名/席4→合計6席(+2)', JSON.stringify(r));
+  }catch(err){ ng('requiredSeats: 7名/席4→合計6席(+2)','例外'+err.message); }
+  try{
+    // 8名/席6・リモート可6名・5営業日・隣接あり: quota=2,supply=12,demand=10<=12 OK,連続4<=6 OK → 現状で成立(+0)
+    const r=requiredSeats(8, 2, 6, 5, true, 6);
+    (r.feasible && r.add===0) ? ok('requiredSeats: 既に成立なら追加0') : ng('requiredSeats: 既に成立なら追加0', JSON.stringify(r));
+  }catch(err){ ng('requiredSeats: 既に成立なら追加0','例外'+err.message); }
+  try{
+    // 常駐必須が多すぎ: 7名中6名常駐必須・リモート可1名・席3 → 席を増やしてもM=6>席3..かつ供給1*2=2では足りない領域あり
+    // s=6でquota=1,demand=5>E*2=2 NG; s=7でquota=0 OK,M=6<=7 OK → 合計7席だが現実的でない。feasibleにはなる
+    // リモート可が極端に少なく席=人数まで必要になるケースの確認（feasible=trueだが全員ぶん席が要る）
+    const r=requiredSeats(7, 6, 1, 5, true, 3);
+    (r.feasible && r.seats===7) ? ok('requiredSeats: 常駐多→全席必要(7席)') : ng('requiredSeats: 常駐多→全席必要(7席)', JSON.stringify(r));
+  }catch(err){ ng('requiredSeats: 常駐多→全席必要(7席)','例外'+err.message); }
 
   return results;
 }
