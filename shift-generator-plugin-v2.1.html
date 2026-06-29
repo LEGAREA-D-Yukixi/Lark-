@@ -9,7 +9,7 @@
     --text:#1f2329; --sub:#646a73; --line:#dee0e3; --bg:#ffffff; --panel:#f5f6f7;
     --blue:#1d4ed8; --blue-deep:#1a3a8f; --navy:#0f2a6b;
     --orange:#f5a623; --orange-deep:#e8820e; --amber:#fbbf4d;
-    --accent:#e8820e; --accent-dark:#cf7209;
+    --accent:#1d4ed8; --accent-dark:#1a3a8f;
     --ok:#2ea121; --warn:#de7802; --err:#d83931;
   }
   *{ box-sizing:border-box; }
@@ -18,18 +18,18 @@
     font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;
     font-size:13px; line-height:1.6;
   }
-  /* デザイン9: グリッド方眼ヘッダー（ネイビー地に方眼、アンバーのタグ） */
-  .apphead{
-    position:relative; padding:20px 16px 16px; background:#0f2a6b;
-    background-image:linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px),
-                     linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px);
-    background-size:18px 18px;
-  }
-  .brand{ display:flex; align-items:center; gap:7px; color:#fff; font-weight:800; font-size:12px; letter-spacing:.06em; }
-  .brand .logo{ width:20px; height:20px; border-radius:4px; background:linear-gradient(135deg,#fff 60%,var(--orange) 60%); }
-  h1{ color:#fff; font-size:17px; font-weight:800; margin:13px 0 0; }
-  h1 .ver{ font-size:11px; font-weight:400; color:#9db2e6; margin-left:6px; letter-spacing:0; }
-  .tag{ display:inline-block; margin-top:8px; font-size:10px; letter-spacing:.16em; color:#0f2a6b; background:var(--amber); padding:2px 8px; border-radius:3px; font-weight:700; }
+  /* デザイン3: 幾何学アクセント（白系ヘッダー＋三角群＋斜めバー＋オレンジのルール） */
+  .apphead{ position:relative; padding:22px 16px 18px; background:#f7f8fa; overflow:hidden; }
+  .apphead .tri{ position:absolute; top:14px; right:14px; width:60px; height:46px; }
+  .apphead .bar{ position:absolute; border-radius:20px; }
+  .apphead .bar1{ width:120px; height:13px; background:linear-gradient(90deg,var(--orange),#fbd089); right:-24px; bottom:26px; transform:rotate(40deg); opacity:.85; }
+  .apphead .bar2{ width:86px; height:13px; background:linear-gradient(90deg,var(--blue),#7da6ee); right:6px; bottom:-8px; transform:rotate(40deg); opacity:.8; }
+  .brand{ position:relative; display:flex; align-items:center; gap:7px; color:var(--blue-deep); font-weight:800; font-size:12px; letter-spacing:.05em; }
+  .brand .logo{ width:20px; height:20px; border-radius:5px; background:linear-gradient(135deg,var(--blue) 60%,var(--orange) 60%); }
+  h1{ position:relative; color:var(--text); font-size:17px; font-weight:800; margin:13px 0 0; }
+  h1 .ver{ font-size:11px; font-weight:400; color:var(--sub); margin-left:6px; letter-spacing:0; }
+  .rule{ position:relative; width:38px; height:3px; background:var(--orange); margin:9px 0 4px; border-radius:2px; }
+  .eyebrow{ position:relative; font-size:11px; color:var(--sub); letter-spacing:.1em; }
   .main{ padding:16px; }
   .field{ margin-bottom:12px; }
   .field label{ display:block; font-size:11px; font-weight:600; margin-bottom:5px; color:var(--sub); }
@@ -45,17 +45,17 @@
     font-family:inherit; transition:transform .05s ease, background .2s ease;
   }
   button:active:not(:disabled){ transform:translateY(1px); }
-  button.primary{ background:var(--orange); border-color:var(--orange); color:#3a2a06; }
-  button.primary:hover:not(:disabled){ background:var(--orange-deep); border-color:var(--orange-deep); color:#fff; }
-  button:hover:not(:disabled){ border-color:var(--orange); }
+  button.primary{ background:var(--blue); border-color:var(--blue); color:#fff; box-shadow:0 4px 12px rgba(29,78,216,.24); }
+  button.primary:hover:not(:disabled){ background:var(--blue-deep); border-color:var(--blue-deep); }
+  button:hover:not(:disabled){ border-color:var(--blue); }
   button:disabled{ opacity:.5; cursor:not-allowed; }
-  button:focus-visible{ outline:2px solid var(--orange); outline-offset:2px; }
+  button:focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
   #log{ border-top:1px solid var(--line); padding-top:10px; }
   #log:empty{ border-top:none; padding-top:0; }
   .line{ display:flex; gap:8px; margin:3px 0; }
   .dot{ flex:none; width:8px; height:8px; border-radius:50%; margin-top:6px; background:var(--sub); }
   .line.ok .dot{ background:var(--ok); } .line.warn .dot{ background:var(--warn); }
-  .line.err .dot{ background:var(--err); } .line.run .dot{ background:var(--orange-deep); }
+  .line.err .dot{ background:var(--err); } .line.run .dot{ background:var(--blue); }
   .line.warn{ color:var(--warn); } .line.err{ color:var(--err); }
   .report{
     background:var(--panel); border:1px solid var(--line); border-radius:6px;
@@ -65,9 +65,12 @@
 </head>
 <body>
   <div class="apphead">
+    <svg class="tri" viewBox="0 0 64 48" aria-hidden="true"><g fill="#7da6ee"><polygon points="0,0 12,0 6,10"/><polygon points="18,0 30,0 24,10"/><polygon points="36,0 48,0 42,10"/><polygon points="9,14 21,14 15,24"/><polygon points="27,14 39,14 33,24"/><polygon points="18,28 30,28 24,38"/></g></svg>
+    <span class="bar bar1"></span><span class="bar bar2"></span>
     <div class="brand"><span class="logo"></span>LEGAREA</div>
-    <h1>リモートシフト自動生成<span class="ver">v3.2</span></h1>
-    <span class="tag">REMOTE SHIFT</span>
+    <h1>リモートシフト自動生成<span class="ver">v3.3</span></h1>
+    <div class="rule"></div>
+    <div class="eyebrow">REMOTE SHIFT GENERATOR</div>
   </div>
   <div class="main">
     <div class="field">
@@ -86,7 +89,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v3.2（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.3（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -118,6 +121,9 @@
  *           ／mondayForWeekのセルフテスト追加（既存テストも全て維持）
  *  15) v3.2: 操作者の所属Division自動判定が使うアカウント列名を実際の列「プラグイン連携用」に修正
  *           ／照合をfindEmployeeByAccountに切り出しセルフテスト追加（列名の整合も検証）
+ *  16) v3.3: リモート方針を変更。「席からあふれた人数だけリモート」をやめ、リモート可能な人を
+ *           週2回・連続不可・公平化の範囲で最大限リモートにする（出社は席数が上限・出社の下限なし）。
+ *           generate/verifyPlanを新方針に更新し関連セルフテストも刷新／UIをデザイン3（幾何学アクセント）に変更
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -532,33 +538,45 @@ function weightedPick(pool, recent, remote){
 }
 function generate(employees, divisions, days, recent){
   const byDiv=groupByDiv(employees); let lastFail='';
+  // 1日分のリモート割り当て（target名に達するまで抽選）。フェーズ1=担当なし、フェーズ2=条件を満たすチーフ/アシ。
+  // targetがInfinityなら「可能な限り（最大化）」。pickedの新規追加数を返す。
+  function assignDay(list, day, remote, recent, target){
+    let picked=0;
+    let pool=list.filter(e=>e.dependents.length===0&&canPick(e,day,days,remote));
+    while(picked<target&&pool.length){ const s=weightedPick(pool,recent,remote);
+      remote[s.id][day.idx]=true; picked++; pool=pool.filter(e=>e.id!==s.id); }
+    if(picked<target){
+      let pool2=list.filter(e=>e.dependents.length>0&&canPick(e,day,days,remote)
+        &&e.dependents.every(mid=>remote[mid]&&remote[mid][day.idx]));
+      while(picked<target&&pool2.length){ const s=weightedPick(pool2,recent,remote);
+        remote[s.id][day.idx]=true; picked++; pool2=pool2.filter(e=>e.id!==s.id); }
+    }
+    return picked;
+  }
   for(let attempt=1; attempt<=R.MAX_RETRY; attempt++){
     const remote={}; employees.forEach(e=>{ remote[e.id]={}; });
     let failed='';
+    // フェーズA（必須）: 各日、出社が席数以内になる最低リモート人数を必ず確保する
     outer:
     for(const day of days){
       for(const divId of Object.keys(byDiv)){
         const div=divisions[divId]; if(!div) continue;
         const list=byDiv[divId];
-        const quota=Math.max(0, list.length-div.seats);
-        if(quota<=0) continue;
-        let picked=0;
-        // フェーズ1: 担当メンバーを持たない人から抽選
-        let pool=list.filter(e=>e.dependents.length===0&&canPick(e,day,days,remote));
-        while(picked<quota&&pool.length){ const s=weightedPick(pool,recent,remote);
-          remote[s.id][day.idx]=true; picked++; pool=pool.filter(e=>e.id!==s.id); }
-        // フェーズ2: チーフ／アシスタント（担当メンバー全員がこの日リモートの場合のみ）
-        if(picked<quota){
-          let pool2=list.filter(e=>e.dependents.length>0&&canPick(e,day,days,remote)
-            &&e.dependents.every(mid=>remote[mid]&&remote[mid][day.idx]));
-          while(picked<quota&&pool2.length){ const s=weightedPick(pool2,recent,remote);
-            remote[s.id][day.idx]=true; picked++; pool2=pool2.filter(e=>e.id!==s.id); }
-        }
-        if(picked<quota){ failed=day.label+'曜の【'+div.name+'】で必要'+quota+'名に対し'+picked+'名のみ'; break outer; }
+        const minRemote=Math.max(0, list.length-div.seats);
+        if(minRemote<=0) continue;
+        const got=assignDay(list, day, remote, recent, minRemote);
+        if(got<minRemote){ failed=day.label+'曜の【'+div.name+'】で出社を席数'+div.seats+'以内にするにはリモート'+minRemote+'名必要だが'+got+'名のみ'; break outer; }
       }
     }
-    if(!failed) return { remote, attempts:attempt };
-    lastFail=failed;
+    if(failed){ lastFail=failed; continue; } // floorを満たせない配置はやり直し
+    // フェーズB（最大化）: 必須を満たした上で、週2回・連続不可・公平化の範囲でリモートを追加する
+    for(const day of days){
+      for(const divId of Object.keys(byDiv)){
+        const div=divisions[divId]; if(!div) continue;
+        assignDay(byDiv[divId], day, remote, recent, Infinity); // 可能な限り追加（canPickが上限・連続を担保）
+      }
+    }
+    return { remote, attempts:attempt };
   }
   throw new Error('制約を満たすシフトを'+R.MAX_RETRY+'回試行しても生成できませんでした。直近の失敗: '+lastFail+'。席数またはルールの見直しが必要です。');
 }
@@ -587,17 +605,15 @@ function verifyPlan(employees, divisions, days, remote){
         v.push(e.name+'が'+days[i-1].label+'→'+days[i].label+'で連続リモート');
     }
   });
-  // 仕様4: 各Divisionの各営業日で、出社人数が席数以内（＝リモート人数が超過数以上）
+  // 仕様4: 各Divisionの各営業日で、出社人数が席数以内（出社の下限は設けない＝リモートは最大限でも可）
   const byDiv=groupByDiv(employees);
   for(const divId of Object.keys(byDiv)){
     const div=divisions[divId]; if(!div) continue;
     const list=byDiv[divId];
-    const quota=Math.max(0, list.length-div.seats);
     days.forEach(d=>{
       const remoteCnt=list.filter(e=>r(e.id)[d.idx]).length;
       const officeCnt=list.length-remoteCnt;
       if(officeCnt>div.seats) v.push('【'+div.name+'】'+d.label+'の出社'+officeCnt+'名が席数'+div.seats+'超過');
-      if(quota>0 && remoteCnt<quota) v.push('【'+div.name+'】'+d.label+'のリモート'+remoteCnt+'名が必要数'+quota+'未満');
     });
   }
   // 仕様5: チーフ／アシスタントは、担当メンバーが1人でも出社の日はリモート不可
@@ -690,10 +706,20 @@ function runSelfTest(){
     for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[]}));
     scenario('2Division同時(6/席4, 7/席5)', emps, {d1:{id:'d1',name:'D1',seats:4}, d2:{id:'d2',name:'D2',seats:5}}, days5);
   })();
-  // S5: 余裕なし（席=人数）→ リモート0、誰もリモートにならない
+  // S5: 席=人数。新仕様では「リモート可能な人は最大限リモート」→ リモートが発生し、出社は席数以内
   (function(){
-    const emps=[]; for(let i=0;i<4;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    scenario('席=人数(リモート不要)', emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
+    try{
+      const emps=[]; for(let i=0;i<4;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+      resolveDependents(emps);
+      const divs={d1:{id:'d1',name:'D1',seats:4}};
+      const plan=generate(emps, divs, days5, {});
+      const viol=verifyPlan(emps, divs, days5, plan.remote);
+      // リモートが1つ以上発生していること（席に余裕があってもリモートする＝新仕様）
+      let totalRemote=0; emps.forEach(e=>{ totalRemote+=Object.keys(plan.remote[e.id]||{}).length; });
+      (viol.length===0 && totalRemote>0)
+        ? ok('席=人数でもリモート発生・出社は席数以内（新仕様）')
+        : ng('席=人数でもリモート発生・出社は席数以内（新仕様）', viol.length?viol.slice(0,2).join(' / '):'リモートが0件');
+    }catch(err){ ng('席=人数でもリモート発生・出社は席数以内（新仕様）','例外'+err.message); }
   })();
 
   // --- preCheck（実行不能の検知）---
@@ -884,6 +910,31 @@ function runSelfTest(){
     (F.EMP.ACCOUNT==='プラグイン連携用') ? ok('CONFIG: アカウント列名が「プラグイン連携用」') : ng('CONFIG: アカウント列名が「プラグイン連携用」', F.EMP.ACCOUNT);
   }catch(err){ ng('CONFIG: アカウント列名が「プラグイン連携用」','例外'+err.message); }
 
+  // --- v3.3: リモート最大化（席に余裕があってもリモート可能な人は上限まで）---
+  try{
+    // 5名・席5（全員座れる＝旧仕様ならリモート0）・全員リモート可・5営業日(隣接あり)
+    const emps=[]; for(let i=0;i<5;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    resolveDependents(emps);
+    const divs={d1:{id:'d1',name:'D1',seats:5}};
+    const plan=generate(emps, divs, days5, {});
+    const viol=verifyPlan(emps, divs, days5, plan.remote);
+    // 各人が週上限(2回)まで割り当てられているか（最大化の確認）。隣接5日で連続不可でも2回は確保可能。
+    let allAtCap=true; emps.forEach(e=>{ if(Object.keys(plan.remote[e.id]||{}).length!==R.MAX_REMOTE_PER_WEEK) allAtCap=false; });
+    (viol.length===0 && allAtCap)
+      ? ok('リモート最大化: 席に余裕でも全員が週上限まで')
+      : ng('リモート最大化: 席に余裕でも全員が週上限まで', viol.length?viol.slice(0,2).join(' / '):'週上限に達していない人がいる');
+  }catch(err){ ng('リモート最大化: 席に余裕でも全員が週上限まで','例外'+err.message); }
+  try{
+    // 出社の下限がないこと：席に余裕があってもリモートが最低人数(N-seats=0)に縛られない
+    // 3名・席3・全員リモート可 → 最低リモート0だが、実際にはリモートが発生する
+    const emps=[]; for(let i=0;i<3;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    resolveDependents(emps);
+    const divs={d1:{id:'d1',name:'D1',seats:3}};
+    const plan=generate(emps, divs, days5, {});
+    let total=0; emps.forEach(e=>{ total+=Object.keys(plan.remote[e.id]||{}).length; });
+    (total>0) ? ok('出社下限なし: 席に余裕でもリモートが発生') : ng('出社下限なし: 席に余裕でもリモートが発生','リモートが0件');
+  }catch(err){ ng('出社下限なし: 席に余裕でもリモートが発生','例外'+err.message); }
+
   return results;
 }
 
@@ -1032,9 +1083,11 @@ async function doGenerate(ctx, employees, divisions, divId, monday){
 
   const n=await writeShifts(ctx, monday, divEmployees, days, plan.remote, divisionsOne);
   const allNotes=notes.concat(pre.warnings);
+  // 実際に割り当てたリモート延べ日数を集計（新仕様：リモートは席数の範囲で最大化）
+  let remoteTotal=0; divEmployees.forEach(e=>{ remoteTotal+=Object.keys((plan.remote&&plan.remote[e.id])||{}).length; });
   // 週管理マスタには詳細を記録（確定通知の対象行になる）
   const logLines=['【'+targetDiv.name+'】対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）',
-    '在籍'+divEmployees.length+'名／席'+targetDiv.seats+' → 毎日リモート'+Math.max(0,divEmployees.length-targetDiv.seats)+'名',
+    '在籍'+divEmployees.length+'名／席'+targetDiv.seats+'（出社の上限）／リモート延べ'+remoteTotal+'日',
     '（抽選試行: '+plan.attempts+'回で確定）'];
   if(allNotes.length){ logLines.push('', '注意事項:'); allNotes.forEach(x=>logLines.push('・'+x)); }
   await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, logLines.join('\n'), targetDiv.name);
