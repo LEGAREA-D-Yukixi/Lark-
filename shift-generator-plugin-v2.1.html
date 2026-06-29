@@ -66,7 +66,7 @@
 <body>
   <div class="apphead">
     <div class="brand"><span class="logo"></span>LEGAREA</div>
-    <h1>リモートシフト自動生成<span class="ver">v3.1</span></h1>
+    <h1>リモートシフト自動生成<span class="ver">v3.2</span></h1>
     <span class="tag">REMOTE SHIFT</span>
   </div>
   <div class="main">
@@ -86,7 +86,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v3.1（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.2（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -116,6 +116,8 @@
  *           ／「開始する週」を選択可能に（mondayForWeek・土日祝は従来どおり自動除外）
  *           ／完了後に「処理中…」を消し「【Division名】のシフト表作成が完了しました」を表示
  *           ／mondayForWeekのセルフテスト追加（既存テストも全て維持）
+ *  15) v3.2: 操作者の所属Division自動判定が使うアカウント列名を実際の列「プラグイン連携用」に修正
+ *           ／照合をfindEmployeeByAccountに切り出しセルフテスト追加（列名の整合も検証）
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -134,7 +136,7 @@ const CONFIG = {
     ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
     DIV:     { NAME: 'Division名', SEATS: '席数' },
     EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
-               EXCEPTION: '例外フラグ', STATUS: '在籍状況', ACCOUNT: 'Larkアカウント' }, // 例外フラグ/アカウントは任意
+               EXCEPTION: '例外フラグ', STATUS: '在籍状況', ACCOUNT: 'プラグイン連携用' }, // 例外フラグ/アカウントは任意
     SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], DIV: '所属Division' },
     WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス', DIV: 'Division' },
     HOLIDAY: { DATE: '日付', NAME: '名称' }
@@ -428,6 +430,13 @@ function resolveDependents(employees){
   const activeIds=new Set(employees.map(e=>e.id));
   employees.forEach(e=>{ e.dependents=(e.memberIds||[]).filter(id=>activeIds.has(id)); });
   return employees;
+}
+/* 操作者のLarkユーザーID(uid)に一致する社員を返す（純粋関数・セルフテスト共用）。
+ * 社員の accountIds（「プラグイン連携用」列から取得）と文字列比較で照合。見つからなければnull。*/
+function findEmployeeByAccount(employees, uid){
+  if(!uid) return null;
+  const key=String(uid);
+  return employees.find(e=>(e.accountIds||[]).map(String).includes(key)) || null;
 }
 function groupByDiv(employees){
   const m={}; employees.forEach(e=>{ if(e.divisionId){ (m[e.divisionId]=m[e.divisionId]||[]).push(e); } }); return m;
@@ -857,6 +866,24 @@ function runSelfTest(){
     allMon ? ok('mondayForWeek: 常に月曜を返す') : ng('mondayForWeek: 常に月曜を返す','月曜以外が含まれる');
   }catch(err){ ng('mondayForWeek: 常に月曜を返す','例外'+err.message); }
 
+  // --- v3.2: findEmployeeByAccount（操作者ID→社員照合）と列名 ---
+  try{
+    const emps=[
+      buildEmployee({id:'e1',name:'土屋',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']}),
+      buildEmployee({id:'e2',name:'他',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[],accountIds:['ou_xyz999']})
+    ];
+    const me=findEmployeeByAccount(emps, 'ou_abc123');
+    (me && me.id==='e1' && me.divisionId==='d1') ? ok('findEmployeeByAccount: IDで本人を照合') : ng('findEmployeeByAccount: IDで本人を照合', me?me.id:'null');
+  }catch(err){ ng('findEmployeeByAccount: IDで本人を照合','例外'+err.message); }
+  try{
+    const emps=[buildEmployee({id:'e1',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']})];
+    (findEmployeeByAccount(emps,'ou_notfound')===null && findEmployeeByAccount(emps,null)===null)
+      ? ok('findEmployeeByAccount: 不一致/未指定はnull') : ng('findEmployeeByAccount: 不一致/未指定はnull','nullになっていない');
+  }catch(err){ ng('findEmployeeByAccount: 不一致/未指定はnull','例外'+err.message); }
+  try{
+    (F.EMP.ACCOUNT==='プラグイン連携用') ? ok('CONFIG: アカウント列名が「プラグイン連携用」') : ng('CONFIG: アカウント列名が「プラグイン連携用」', F.EMP.ACCOUNT);
+  }catch(err){ ng('CONFIG: アカウント列名が「プラグイン連携用」','例外'+err.message); }
+
   return results;
 }
 
@@ -1040,7 +1067,7 @@ btnGen.addEventListener('click', async ()=>{
     let divId=null;
     const uid=await getCurrentUserId();
     if(uid){
-      const me=employees.find(e=>(e.accountIds||[]).map(String).includes(String(uid)));
+      const me=findEmployeeByAccount(employees, uid);
       if(me && me.divisionId && divisions[me.divisionId]) divId=me.divisionId;
     }
 
@@ -1057,7 +1084,7 @@ btnGen.addEventListener('click', async ()=>{
       });
       divPicker.style.display='block';
       clearLog();
-      log('操作者の所属Divisionを自動判定できませんでした（社員マスタのLarkアカウント未設定、または取得不可）。','warn');
+      log('操作者の所属Divisionを自動判定できませんでした（社員マスタの「プラグイン連携用」未設定、または取得不可）。','warn');
       log('上の「対象Division」を選び、もう一度「シフトを生成」を押してください。','warn');
     }
   }catch(e){
