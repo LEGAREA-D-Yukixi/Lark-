@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.8</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.9</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
   <div id="divPicker" style="display:none; margin-bottom:10px;">
     <label style="display:block; font-size:12px; color:var(--sub); margin-bottom:4px;">対象Division</label>
@@ -57,7 +57,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.8（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.9（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -78,6 +78,9 @@
  *           ／対象Division名が選択肢に無い場合は明確なエラー／divisionNameForのセルフテスト追加
  *  11) v2.8: 生成時に週管理マスタへ単一選択「Division」を自動入力（週×Division粒度・確定通知の分岐用）
  *           ／buildWeekLogFieldsに抽出しセルフテスト追加（列なし/未指定は書き込まない後方互換も検証）
+ *  12) v2.9: シフト表の「ステータス」を廃止（方式1では週管理マスタで確定管理するため不要）
+ *           ／書き込み対象列をSHIFT_WRITE_FIELDSに一元化し、生成前に列の存在を点検→欠落は明確に表示
+ *           ／書き込み列と検証の整合をセルフテストで担保（列欠落のデグレを事前検知）
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -97,7 +100,7 @@ const CONFIG = {
     DIV:     { NAME: 'Division名', SEATS: '席数' },
     EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
                EXCEPTION: '例外フラグ', STATUS: '在籍状況', ACCOUNT: 'Larkアカウント' }, // 例外フラグ/アカウントは任意
-    SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], STATUS: 'ステータス', DIV: '所属Division' },
+    SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], DIV: '所属Division' },
     WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス', DIV: 'Division' },
     HOLIDAY: { DATE: '日付', NAME: '名称' }
   },
@@ -108,6 +111,13 @@ const CONFIG = {
   RULES: { MAX_REMOTE_PER_WEEK: 2, FAIRNESS_LOOKBACK_WEEKS: 4, MAX_RETRY: 200 }
 };
 const F = CONFIG.FIELD, V = CONFIG.VAL, R = CONFIG.RULES;
+
+/* シフト表へ生成時に必ず書き込む列（＝この列が無いと生成不可）の単一の真実の源。
+ * writeShifts/probeWriteFormat が書く列と、buildContextの存在チェックを一致させるために共用する。
+ * 所属Division(DIV)は「列があれば書く」任意項目のため、ここには含めない。 */
+function SHIFT_WRITE_FIELDS(){
+  return [F.SHIFT.WEEK, F.SHIFT.EMP, ...F.SHIFT.DAYS];
+}
 
 /* ---- 画面まわり ---- */
 const logEl = document.getElementById('log');
@@ -232,7 +242,7 @@ async function getOptionMap(table){
 }
 async function checkSelectOptions(tables, problems){
   const plan = {
-    SHIFT: [ [F.SHIFT.DAYS, [V.OFFICE, V.REMOTE, V.OFF]], [[F.SHIFT.STATUS], [V.DRAFT, V.FINAL]] ],
+    SHIFT: [ [F.SHIFT.DAYS, [V.OFFICE, V.REMOTE, V.OFF]] ],
     WLOG:  [ [[F.WLOG.RESULT], [V.OK, V.WARN, V.ERR]], [[F.WLOG.STATUS], [V.DRAFT, V.FINAL]] ]
   };
   for (const key of Object.keys(plan)){
@@ -310,7 +320,6 @@ async function probeWriteFormat(ctx, sampleEmpId){
         fields[m[F.SHIFT.WEEK]] = Date.now();
         fields[m[F.SHIFT.EMP]] = linkVal(sampleEmpId);
         fields[m[F.SHIFT.DAYS[0]]] = selVal(ctx, m[F.SHIFT.DAYS[0]], V.OFFICE);
-        fields[m[F.SHIFT.STATUS]] = selVal(ctx, m[F.SHIFT.STATUS], V.DRAFT);
         rid = normRecordId(await tShift.addRecord({ fields: fields }));
         if (!rid) throw new Error('recordIdが取得できませんでした');
         const fl = recordFields(await tShift.getRecordById(rid));
@@ -726,6 +735,26 @@ function runSelfTest(){
     (!('fD' in f)) ? ok('buildWeekLogFields: divName未指定なら書き込まない') : ng('buildWeekLogFields: divName未指定なら書き込まない', JSON.stringify(f));
   }catch(err){ ng('buildWeekLogFields: divName未指定なら書き込まない','例外'+err.message); }
 
+  // --- v2.9: シフト表の書き込み対象列の整合性（ステータス削除のデグレ防止）---
+  try{
+    const w=SHIFT_WRITE_FIELDS();
+    // 週・社員・全曜日が含まれること
+    const need=[F.SHIFT.WEEK, F.SHIFT.EMP, ...F.SHIFT.DAYS];
+    const missing=need.filter(x=>w.indexOf(x)===-1);
+    missing.length===0 ? ok('SHIFT_WRITE_FIELDS: 必須列(週・社員・曜日)を含む') : ng('SHIFT_WRITE_FIELDS: 必須列(週・社員・曜日)を含む','不足: '+missing.join(','));
+  }catch(err){ ng('SHIFT_WRITE_FIELDS: 必須列(週・社員・曜日)を含む','例外'+err.message); }
+  try{
+    const w=SHIFT_WRITE_FIELDS();
+    // ステータスis含まれないこと（削除済み）／所属Divisionも必須には含めない（任意項目）
+    const hasStatus=w.indexOf('ステータス')!==-1;
+    const hasDiv=w.indexOf(F.SHIFT.DIV)!==-1;
+    (!hasStatus && !hasDiv) ? ok('SHIFT_WRITE_FIELDS: ステータス除外・所属Divは任意') : ng('SHIFT_WRITE_FIELDS: ステータス除外・所属Divは任意', 'status='+hasStatus+' div='+hasDiv);
+  }catch(err){ ng('SHIFT_WRITE_FIELDS: ステータス除外・所属Divは任意','例外'+err.message); }
+  try{
+    // SHIFT設定自体にSTATUSキーが残っていないこと（設定とコードの不整合防止）
+    ('STATUS' in F.SHIFT)===false ? ok('CONFIG: シフト表設定からSTATUSキーが削除済み') : ng('CONFIG: シフト表設定からSTATUSキーが削除済み','STATUSキーが残存');
+  }catch(err){ ng('CONFIG: シフト表設定からSTATUSキーが削除済み','例外'+err.message); }
+
   return results;
 }
 
@@ -754,7 +783,6 @@ async function writeShifts(ctx, monday, employees, days, remote, divisions){
     F.SHIFT.DAYS.forEach((label,i)=>{
       fields[m[label]]=selVal(ctx, m[label], !present[i]?V.OFF:(remote[e.id]&&remote[e.id][i]?V.REMOTE:V.OFFICE));
     });
-    fields[m[F.SHIFT.STATUS]]=selVal(ctx, m[F.SHIFT.STATUS], V.DRAFT);
     if(hasDivCol && divisions && e.divisionId && divisions[e.divisionId]){
       fields[m[F.SHIFT.DIV]]=selVal(ctx, m[F.SHIFT.DIV], divisionNameFor(e, divisions));  // 行フィルタ用の所属Division
     }
@@ -794,7 +822,7 @@ async function buildContext(){
   checkFields(maps.ROLE,[F.ROLE.NAME,F.ROLE.REMOTE_OK],CONFIG.TABLES.ROLE,problems);
   checkFields(maps.DIV,[F.DIV.NAME,F.DIV.SEATS],CONFIG.TABLES.DIV,problems);
   checkFields(maps.EMP,[F.EMP.NAME,F.EMP.ROLE,F.EMP.DIV,F.EMP.MEMBERS,F.EMP.STATUS],CONFIG.TABLES.EMP,problems); // 例外フラグは任意
-  checkFields(maps.SHIFT,[F.SHIFT.WEEK,F.SHIFT.EMP,...F.SHIFT.DAYS,F.SHIFT.STATUS],CONFIG.TABLES.SHIFT,problems);
+  checkFields(maps.SHIFT,SHIFT_WRITE_FIELDS(),CONFIG.TABLES.SHIFT,problems);
   checkFields(maps.WLOG,[F.WLOG.WEEK,F.WLOG.RESULT,F.WLOG.LOG,F.WLOG.STATUS],CONFIG.TABLES.WLOG,problems);
   checkFields(maps.HOLIDAY,[F.HOLIDAY.DATE,F.HOLIDAY.NAME],CONFIG.TABLES.HOLIDAY,problems);
   await checkSelectOptions(tables, problems);
