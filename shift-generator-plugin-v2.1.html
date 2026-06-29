@@ -7,34 +7,55 @@
 <style>
   :root{
     --text:#1f2329; --sub:#646a73; --line:#dee0e3; --bg:#ffffff; --panel:#f5f6f7;
-    --accent:#3370ff; --accent-dark:#245bdb;
+    --blue:#1d4ed8; --blue-deep:#1a3a8f; --navy:#0f2a6b;
+    --orange:#f5a623; --orange-deep:#e8820e; --amber:#fbbf4d;
+    --accent:#e8820e; --accent-dark:#cf7209;
     --ok:#2ea121; --warn:#de7802; --err:#d83931;
   }
   *{ box-sizing:border-box; }
   body{
-    margin:0; padding:16px; background:var(--bg); color:var(--text);
+    margin:0; padding:0; background:var(--bg); color:var(--text);
     font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;
     font-size:13px; line-height:1.6;
   }
-  h1{ font-size:15px; font-weight:700; margin:0 0 2px; }
-  h1 .ver{ font-size:11px; font-weight:400; color:var(--sub); margin-left:6px; }
-  .sub{ color:var(--sub); font-size:12px; margin-bottom:14px; }
-  .sub b{ color:var(--text); font-weight:600; }
+  /* デザイン9: グリッド方眼ヘッダー（ネイビー地に方眼、アンバーのタグ） */
+  .apphead{
+    position:relative; padding:20px 16px 16px; background:#0f2a6b;
+    background-image:linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px);
+    background-size:18px 18px;
+  }
+  .brand{ display:flex; align-items:center; gap:7px; color:#fff; font-weight:800; font-size:12px; letter-spacing:.06em; }
+  .brand .logo{ width:20px; height:20px; border-radius:4px; background:linear-gradient(135deg,#fff 60%,var(--orange) 60%); }
+  h1{ color:#fff; font-size:17px; font-weight:800; margin:13px 0 0; }
+  h1 .ver{ font-size:11px; font-weight:400; color:#9db2e6; margin-left:6px; letter-spacing:0; }
+  .tag{ display:inline-block; margin-top:8px; font-size:10px; letter-spacing:.16em; color:#0f2a6b; background:var(--amber); padding:2px 8px; border-radius:3px; font-weight:700; }
+  .main{ padding:16px; }
+  .field{ margin-bottom:12px; }
+  .field label{ display:block; font-size:11px; font-weight:600; margin-bottom:5px; color:var(--sub); }
+  .field select{
+    width:100%; padding:9px 10px; border-radius:7px; border:1px solid var(--line);
+    font-size:13px; font-family:inherit; background:#fff; color:var(--text);
+  }
+  .field select:focus-visible{ outline:2px solid var(--blue); outline-offset:1px; }
   .buttons{ display:flex; flex-direction:column; gap:8px; margin-bottom:14px; }
   button{
-    width:100%; padding:9px 12px; border-radius:6px; font-size:13px; font-weight:600;
+    width:100%; padding:10px 12px; border-radius:7px; font-size:13px; font-weight:700;
     border:1px solid var(--line); background:#fff; color:var(--text); cursor:pointer;
+    font-family:inherit; transition:transform .05s ease, background .2s ease;
   }
-  button.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.primary:hover:not(:disabled){ background:var(--accent-dark); }
-  button:hover:not(:disabled){ border-color:var(--accent); }
+  button:active:not(:disabled){ transform:translateY(1px); }
+  button.primary{ background:var(--orange); border-color:var(--orange); color:#3a2a06; }
+  button.primary:hover:not(:disabled){ background:var(--orange-deep); border-color:var(--orange-deep); color:#fff; }
+  button:hover:not(:disabled){ border-color:var(--orange); }
   button:disabled{ opacity:.5; cursor:not-allowed; }
-  button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  button:focus-visible{ outline:2px solid var(--orange); outline-offset:2px; }
   #log{ border-top:1px solid var(--line); padding-top:10px; }
+  #log:empty{ border-top:none; padding-top:0; }
   .line{ display:flex; gap:8px; margin:3px 0; }
   .dot{ flex:none; width:8px; height:8px; border-radius:50%; margin-top:6px; background:var(--sub); }
   .line.ok .dot{ background:var(--ok); } .line.warn .dot{ background:var(--warn); }
-  .line.err .dot{ background:var(--err); } .line.run .dot{ background:var(--accent); }
+  .line.err .dot{ background:var(--err); } .line.run .dot{ background:var(--orange-deep); }
   .line.warn{ color:var(--warn); } .line.err{ color:var(--err); }
   .report{
     background:var(--panel); border:1px solid var(--line); border-radius:6px;
@@ -43,21 +64,29 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v3.0</span></h1>
-  <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
-  <div id="divPicker" style="display:none; margin-bottom:10px;">
-    <label style="display:block; font-size:12px; color:var(--sub); margin-bottom:4px;">対象Division</label>
-    <select id="divSelect" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:13px; background:#fff; color:var(--text);"></select>
+  <div class="apphead">
+    <div class="brand"><span class="logo"></span>LEGAREA</div>
+    <h1>リモートシフト自動生成<span class="ver">v3.1</span></h1>
+    <span class="tag">REMOTE SHIFT</span>
   </div>
-  <div class="buttons">
-    <button id="btnGen" class="primary">シフトを生成（下書き）</button>
-    <button id="btnSelfTest">仕様テストを実行（デグレ確認）</button>
+  <div class="main">
+    <div class="field">
+      <label for="weekSelect">開始する週</label>
+      <select id="weekSelect"></select>
+    </div>
+    <div id="divPicker" style="display:none;" class="field">
+      <label for="divSelect">対象Division</label>
+      <select id="divSelect"></select>
+    </div>
+    <div class="buttons">
+      <button id="btnGen" class="primary">シフトを生成</button>
+    </div>
+    <div id="log"></div>
   </div>
-  <div id="log"></div>
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v3.0（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.1（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -83,12 +112,16 @@
  *           ／書き込み列と検証の整合をセルフテストで担保（列欠落のデグレを事前検知）
  *  13) v3.0: 座席数不足エラーを「あと◯席（合計◯席）必要」と端的に表示（requiredSeatsで必要席数を計算）
  *           ／席を増やしても解けない場合はリモート可能人数の不足を案内／requiredSeatsのセルフテスト追加
+ *  14) v3.1: UIをデザイン刷新（グリッド方眼ヘッダー）／「仕様テスト」ボタン廃止・ボタンは「シフトを生成」のみ
+ *           ／「開始する週」を選択可能に（mondayForWeek・土日祝は従来どおり自動除外）
+ *           ／完了後に「処理中…」を消し「【Division名】のシフト表作成が完了しました」を表示
+ *           ／mondayForWeekのセルフテスト追加（既存テストも全て維持）
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
  *         カスタムプラグイン（スクリプト）としてURLを登録 →
- *         ③「シフトを生成（下書き）」を実行（検証は自動で先に走ります）
- *         ※改修したら「仕様テストを実行」で全仕様の維持を自己診断できます
+ *         ③「開始する週」を選び「シフトを生成」を実行（検証は自動で先に走ります）
+ *         ※デグレ防止の仕様テスト(runSelfTest)はコードに内蔵。リリース前にNodeで実行して全件パスを確認すること
  * ==================================================================== */
 
 /* ---- 設定（Base側のテーブル名・フィールド名・選択肢と完全一致させる）---- */
@@ -124,18 +157,20 @@ function SHIFT_WRITE_FIELDS(){
 /* ---- 画面まわり ---- */
 const logEl = document.getElementById('log');
 const btnGen = document.getElementById('btnGen');
-const btnSelfTest = document.getElementById('btnSelfTest');
 const divPicker = document.getElementById('divPicker');
 const divSelect = document.getElementById('divSelect');
+const weekSelect = document.getElementById('weekSelect');
 function log(msg, type){ const d=document.createElement('div'); d.className='line '+(type||'');
   d.innerHTML='<span class="dot"></span><span></span>'; d.lastChild.textContent=msg; logEl.appendChild(d); }
 function report(text){ const d=document.createElement('div'); d.className='report'; d.textContent=text; logEl.appendChild(d); }
 function clearLog(){ logEl.innerHTML=''; }
-function setBusy(b){ btnGen.disabled=b; btnSelfTest.disabled=b; }
+function setBusy(b){ btnGen.disabled=b; weekSelect.disabled=b; divSelect.disabled=b; }
 
 /* ---- 日付ヘルパー ---- */
 const DAY = 86400000;
 function nextMonday(){ const d=new Date(); d.setHours(0,0,0,0); do{ d.setDate(d.getDate()+1); }while(d.getDay()!==1); return d; }
+/* 開始する週の月曜日。offset=0で「翌週の月曜」、1で再来週… 純粋関数（セルフテスト用にbaseを差し替え可能）。*/
+function mondayForWeek(offset, base){ const m=base?new Date(base.getTime()):nextMonday(); m.setDate(m.getDate()+7*(offset||0)); return m; }
 function addDays(d,n){ const x=new Date(d.getTime()); x.setDate(x.getDate()+n); return x; }
 function dayDiff(a,b){ return Math.round((a.getTime()-b.getTime())/DAY); }
 function weeksAgo(ts, mondayMs){ return Math.round((mondayMs-ts)/(7*DAY)); }
@@ -808,6 +843,20 @@ function runSelfTest(){
     (r.feasible && r.seats===7) ? ok('requiredSeats: 常駐多→全席必要(7席)') : ng('requiredSeats: 常駐多→全席必要(7席)', JSON.stringify(r));
   }catch(err){ ng('requiredSeats: 常駐多→全席必要(7席)','例外'+err.message); }
 
+  // --- v3.1: mondayForWeek（開始する週の選択）---
+  try{
+    const base=new Date(2026,0,5); // 月曜
+    const w0=mondayForWeek(0, base), w1=mondayForWeek(1, base), w3=mondayForWeek(3, base);
+    const diff1=Math.round((w1-w0)/DAY), diff3=Math.round((w3-w0)/DAY);
+    (diff1===7 && diff3===21) ? ok('mondayForWeek: offsetで7日ずつ進む') : ng('mondayForWeek: offsetで7日ずつ進む','diff1='+diff1+' diff3='+diff3);
+  }catch(err){ ng('mondayForWeek: offsetで7日ずつ進む','例外'+err.message); }
+  try{
+    const base=new Date(2026,0,5); // 月曜
+    let allMon=true;
+    for(let i=0;i<8;i++){ if(mondayForWeek(i, base).getDay()!==1) allMon=false; }
+    allMon ? ok('mondayForWeek: 常に月曜を返す') : ng('mondayForWeek: 常に月曜を返す','月曜以外が含まれる');
+  }catch(err){ ng('mondayForWeek: 常に月曜を返す','例外'+err.message); }
+
   return results;
 }
 
@@ -900,9 +949,9 @@ function isDivAlreadyGenerated(shiftRows, mShift, mondayMs, divEmpIds){
   });
 }
 
-/* 実際の生成処理（対象Divisionを限定して実行）。divId を渡すとそのDivのみ。 */
-async function doGenerate(ctx, employees, divisions, divId){
-  const monday=nextMonday();
+/* 実際の生成処理（対象Divisionを限定して実行）。divId を渡すとそのDivのみ。monday=対象週の月曜。 */
+async function doGenerate(ctx, employees, divisions, divId, monday){
+  if(!monday) monday=nextMonday();
   const targetDiv=divisions[divId];
   if(!targetDiv) throw new Error('対象Divisionが特定できませんでした。');
   // 対象Divisionの在籍者だけに絞る（生成・検証・書き込みはこの集合で完結）
@@ -926,6 +975,7 @@ async function doGenerate(ctx, employees, divisions, divId){
 
   const shiftRows=await readAll(ctx.tables.SHIFT);
   if(isDivAlreadyGenerated(shiftRows, ctx.maps.SHIFT, monday.getTime(), divEmployees.map(e=>e.id))){
+    clearLog();
     log('【'+targetDiv.name+'】の'+fmt(monday)+'週シフトは既に存在するため中止しました。作り直す場合は、シフト表から該当週・該当Divisionの行を削除して再実行してください。','warn');
     return;
   }
@@ -933,13 +983,14 @@ async function doGenerate(ctx, employees, divisions, divId){
   const pre=preCheck(divEmployees, divisionsOne, days);
   if(pre.errors.length){
     await writeWeekLog(ctx, monday, V.ERR, '【'+targetDiv.name+'】\n'+pre.errors.join('\n'), targetDiv.name);
+    clearLog();
     pre.errors.forEach(x=>log(x,'err'));
     log('上記の理由で生成できません。内容を週管理マスタに記録しました。','warn');
     return;
   }
 
-  // 確認ダイアログは残す（完了メッセージの代わり）
-  if(!window.confirm('【'+targetDiv.name+'】'+fmt(monday)+'週のシフト下書きを'+divEmployees.length+'名分作成します。よろしいですか？')){ return; }
+  // 確認ダイアログは残す
+  if(!window.confirm('【'+targetDiv.name+'】'+fmt(monday)+'週のシフトを'+divEmployees.length+'名分作成します。よろしいですか？')){ return; }
 
   const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
   const plan=generate(divEmployees, divisionsOne, days, recent);
@@ -954,12 +1005,15 @@ async function doGenerate(ctx, employees, divisions, divId){
 
   const n=await writeShifts(ctx, monday, divEmployees, days, plan.remote, divisionsOne);
   const allNotes=notes.concat(pre.warnings);
-  const lines=['【'+targetDiv.name+'】対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）',
+  // 週管理マスタには詳細を記録（確定通知の対象行になる）
+  const logLines=['【'+targetDiv.name+'】対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）',
     '在籍'+divEmployees.length+'名／席'+targetDiv.seats+' → 毎日リモート'+Math.max(0,divEmployees.length-targetDiv.seats)+'名',
     '（抽選試行: '+plan.attempts+'回で確定）'];
-  if(allNotes.length){ lines.push('', '注意事項:'); allNotes.forEach(x=>lines.push('・'+x)); }
-  await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, lines.join('\n'), targetDiv.name);
-  report(lines.join('\n'));
+  if(allNotes.length){ logLines.push('', '注意事項:'); allNotes.forEach(x=>logLines.push('・'+x)); }
+  await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, logLines.join('\n'), targetDiv.name);
+  // 画面表示: 「処理中…」を消し、完了メッセージを出す
+  clearLog();
+  log('【'+targetDiv.name+'】のシフト表作成が完了しました','ok');
   allNotes.forEach(x=>log(x,'warn'));
 }
 
@@ -967,11 +1021,12 @@ async function doGenerate(ctx, employees, divisions, divId){
 btnGen.addEventListener('click', async ()=>{
   if(busy) return;                 // 排他制御（二重実行防止）
   busy=true; setBusy(true); clearLog();
-  log('処理中…','run');            // 唯一の進捗表示（完了メッセージは出さない）
+  log('処理中…','run');            // 唯一の進捗表示（完了後に消す）
+  const monday=mondayForWeek(Number(weekSelect.value||0));  // 選択された開始週
   try{
     // プルダウンが表示済みで選択されている場合は、その選択を使う
     if(pickerCtx && divPicker.style.display!=='none' && divSelect.value){
-      await doGenerate(pickerCtx.ctx, pickerCtx.employees, pickerCtx.divisions, divSelect.value);
+      await doGenerate(pickerCtx.ctx, pickerCtx.employees, pickerCtx.divisions, divSelect.value, monday);
       return;
     }
 
@@ -992,7 +1047,7 @@ btnGen.addEventListener('click', async ()=>{
     if(divId){
       // 自動判定成功 → そのDivisionのみ生成
       if(divPicker) divPicker.style.display='none';
-      await doGenerate(ctx, employees, divisions, divId);
+      await doGenerate(ctx, employees, divisions, divId, monday);
     }else{
       // 自動判定不可 → プルダウンを表示してフォールバック（このタップでは生成しない）
       pickerCtx={ ctx, employees, divisions };
@@ -1001,40 +1056,29 @@ btnGen.addEventListener('click', async ()=>{
         const o=document.createElement('option'); o.value=id; o.textContent=divisions[id].name; divSelect.appendChild(o);
       });
       divPicker.style.display='block';
+      clearLog();
       log('操作者の所属Divisionを自動判定できませんでした（社員マスタのLarkアカウント未設定、または取得不可）。','warn');
-      log('上の「対象Division」を選び、もう一度「シフトを生成（下書き）」を押してください。','warn');
+      log('上の「対象Division」を選び、もう一度「シフトを生成」を押してください。','warn');
     }
   }catch(e){
+    clearLog();
     log('エラー: '+String(e.message||e),'err');
     log('↑このメッセージをそのままコピーして共有いただければ原因を特定できます。','warn');
-    try{ const ctx=await buildContext(); await writeWeekLog(ctx, nextMonday(), V.ERR, String(e.message||e)); }catch(_){}
+    try{ const ctx=await buildContext(); await writeWeekLog(ctx, monday, V.ERR, String(e.message||e)); }catch(_){}
   }finally{ busy=false; setBusy(false); }
 });
 
-/* ---- ボタン: 仕様テスト（内蔵セルフテスト・Base不要）---- */
-btnSelfTest.addEventListener('click', ()=>{
-  clearLog(); setBusy(true);
-  try{
-    log('仕様テストを実行しています（Baseには接続しません）…','run');
-    const results=runSelfTest();
-    const passed=results.filter(r=>r.pass).length;
-    const failed=results.filter(r=>!r.pass);
-    results.forEach(r=>{
-      if(r.pass) log('PASS: '+r.name,'ok');
-      else log('FAIL: '+r.name+' — '+(r.detail||''),'err');
-    });
-    if(failed.length===0){
-      log('全'+results.length+'件パス。これまでの仕様はすべて維持されています。','ok');
-    }else{
-      log(failed.length+'件の仕様が壊れています（FAIL '+failed.length+' / 全'+results.length+'）。上記をそのまま共有してください。','err');
-    }
-  }catch(e){
-    log('仕様テスト自体が例外で停止: '+String(e.message||e),'err');
-  }finally{ setBusy(false); }
-});
-
-/* ---- 初期表示 ---- */
-document.getElementById('targetWeek').textContent=fmt(nextMonday())+' 〜';
+/* ---- 初期表示: 「開始する週」セレクトを構築（翌週から8週分）---- */
+(function initWeekSelect(){
+  for(let i=0;i<8;i++){
+    const m=mondayForWeek(i);
+    const opt=document.createElement('option');
+    opt.value=String(i);
+    const labelHead = i===0?'翌週':(i===1?'再来週':((i+1)+'週後'));
+    opt.textContent=labelHead+'（'+fmt(m)+'〜）';
+    weekSelect.appendChild(opt);
+  }
+})();
 </script>
 </body>
 </html>
