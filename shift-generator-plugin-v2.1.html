@@ -43,8 +43,12 @@
 </style>
 </head>
 <body>
-  <h1>リモートシフト自動生成<span class="ver">v2.5</span></h1>
+  <h1>リモートシフト自動生成<span class="ver">v2.8</span></h1>
   <div class="sub">対象週: <b id="targetWeek">計算中…</b>（実行日の翌週・月曜はじまり）</div>
+  <div id="divPicker" style="display:none; margin-bottom:10px;">
+    <label style="display:block; font-size:12px; color:var(--sub); margin-bottom:4px;">対象Division</label>
+    <select id="divSelect" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:13px; background:#fff; color:var(--text);"></select>
+  </div>
   <div class="buttons">
     <button id="btnGen" class="primary">シフトを生成（下書き）</button>
     <button id="btnSelfTest">仕様テストを実行（デグレ確認）</button>
@@ -53,7 +57,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v2.5（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v2.8（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -66,6 +70,14 @@
  *   8) v2.5: 「設定チェック」ボタンを廃止し検証を生成ボタンに統合／エラーは原因特定できる粒度で表示
  *           ／生成結果を全仕様で自己検証(verifyPlan)してから書き込み
  *           ／デグレ防止の内蔵セルフテスト(runSelfTest)＝「仕様テストを実行」ボタンを追加
+ *   9) v2.6: 操作者の所属Divisionを自動判定し、そのDivisionのみ生成（判定不可ならプルダウン）
+ *           ／週×Division単位の重複チェック／進捗ログ非表示・「処理中…」表示と二重実行防止
+ *           ／確認ダイアログは維持・完了メッセージは非表示／社員マスタに任意「Larkアカウント」列
+ *           ／上記の新仕様にもセルフテストを追加（既存テストも全実行）
+ *  10) v2.7: 生成時にシフト表へ単一選択「所属Division」を自動入力（権限の行フィルタ用）
+ *           ／対象Division名が選択肢に無い場合は明確なエラー／divisionNameForのセルフテスト追加
+ *  11) v2.8: 生成時に週管理マスタへ単一選択「Division」を自動入力（週×Division粒度・確定通知の分岐用）
+ *           ／buildWeekLogFieldsに抽出しセルフテスト追加（列なし/未指定は書き込まない後方互換も検証）
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -84,9 +96,9 @@ const CONFIG = {
     ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
     DIV:     { NAME: 'Division名', SEATS: '席数' },
     EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
-               EXCEPTION: '例外フラグ', STATUS: '在籍状況' },   // 例外フラグは任意（無くても可）
-    SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], STATUS: 'ステータス' },
-    WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス' },
+               EXCEPTION: '例外フラグ', STATUS: '在籍状況', ACCOUNT: 'Larkアカウント' }, // 例外フラグ/アカウントは任意
+    SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], STATUS: 'ステータス', DIV: '所属Division' },
+    WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス', DIV: 'Division' },
     HOLIDAY: { DATE: '日付', NAME: '名称' }
   },
   VAL: {
@@ -101,6 +113,8 @@ const F = CONFIG.FIELD, V = CONFIG.VAL, R = CONFIG.RULES;
 const logEl = document.getElementById('log');
 const btnGen = document.getElementById('btnGen');
 const btnSelfTest = document.getElementById('btnSelfTest');
+const divPicker = document.getElementById('divPicker');
+const divSelect = document.getElementById('divSelect');
 function log(msg, type){ const d=document.createElement('div'); d.className='line '+(type||'');
   d.innerHTML='<span class="dot"></span><span></span>'; d.lastChild.textContent=msg; logEl.appendChild(d); }
 function report(text){ const d=document.createElement('div'); d.className='report'; d.textContent=text; logEl.appendChild(d); }
@@ -138,6 +152,15 @@ function cellLinkIds(v){
   return [];
 }
 const firstLink = v => cellLinkIds(v)[0] || null;
+/* メンバー（人物）型フィールドからLarkユーザーIDの配列を取り出す（返却形式の揺れに対応） */
+function cellUserIds(v){
+  if (!v) return [];
+  const pick=x=>{ if(typeof x==='string') return x;
+    if(x&&typeof x==='object') return x.id||x.userId||x.user_id||x.openId||x.open_id||x.unionId||x.union_id||null;
+    return null; };
+  if (Array.isArray(v)) return v.map(pick).filter(Boolean);
+  const one=pick(v); return one?[one]:[];
+}
 /* リモート可否: チェックボックスtrue または 単一選択「ON」をリモート可と解釈 */
 function isRemoteOK(v){
   if (v===true) return true;
@@ -154,6 +177,20 @@ async function loadSDK(){
   let lastErr=null;
   for (const u of urls){ try{ const m=await import(u); bitable=m.bitable; if(bitable) return; }catch(e){ lastErr=e; } }
   throw new Error('Base SDKを読み込めませんでした。ネットワーク（CDNへの到達性）を確認してください。'+(lastErr?(' 詳細: '+lastErr.message):''));
+}
+
+/* 操作中のユーザーのLark IDを取得する。取得できなければ null（→プルダウンにフォールバック）。
+ * SDKのバージョン差を吸収するため複数の方法を順に試す。 */
+async function getCurrentUserId(){
+  try{ await loadSDK(); }catch(e){ return null; }
+  const tryFns=[
+    async()=>bitable.bridge && bitable.bridge.getUserId && await bitable.bridge.getUserId(),
+    async()=>bitable.bridge && bitable.bridge.getBaseUserId && await bitable.bridge.getBaseUserId()
+  ];
+  for(const fn of tryFns){
+    try{ const id=await fn(); if(id) return String(id); }catch(e){ /* 次を試す */ }
+  }
+  return null;
 }
 
 /* ---- テーブル・フィールド ---- */
@@ -315,7 +352,8 @@ async function loadMasters(ctx){
       linkedRoles:linkedRoles,
       exception:cellText(f[m[F.EMP.EXCEPTION]]),           // 列が無ければ常に空（=例外なし）
       divisionId:firstLink(f[m[F.EMP.DIV]]),
-      memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]])           // 担当メンバー（チーフ／アシ行に入る）
+      memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]]),          // 担当メンバー（チーフ／アシ行に入る）
+      accountIds:m[F.EMP.ACCOUNT]?cellUserIds(f[m[F.EMP.ACCOUNT]]):[] // Larkアカウント（任意）
     }));
   });
   resolveDependents(employees);                            // 担当メンバーのうち在籍者だけを判定対象に
@@ -335,6 +373,7 @@ function buildEmployee(src){
     remoteOK:linked.length>0 && linked.every(x=>x.remoteOK) && src.exception!==V.MUST_ONSITE,
     divisionId:src.divisionId||null,
     memberIds:src.memberIds||[],
+    accountIds:src.accountIds||[],
     dependents:[]
   };
 }
@@ -598,6 +637,95 @@ function runSelfTest(){
     viol.some(x=>x.includes('連続')) ? ok('verifyPlan: 連続リモート違反を検知') : ng('verifyPlan: 連続リモート違反を検知','検知できていない');
   }catch(err){ ng('verifyPlan: 連続リモート違反を検知','例外'+err.message); }
 
+  // --- v2.6: cellUserIds（メンバー型→ユーザーID抽出）---
+  try{
+    const a=cellUserIds([{id:'u1',name:'X'},{id:'u2'}]);
+    (a.length===2 && a[0]==='u1' && a[1]==='u2') ? ok('cellUserIds: オブジェクト配列からID抽出') : ng('cellUserIds: オブジェクト配列からID抽出', JSON.stringify(a));
+  }catch(err){ ng('cellUserIds: オブジェクト配列からID抽出','例外'+err.message); }
+  try{
+    const a=cellUserIds([{open_id:'o1'}]); // idが無くopen_idのみ
+    (a.length===1 && a[0]==='o1') ? ok('cellUserIds: open_idフォールバック') : ng('cellUserIds: open_idフォールバック', JSON.stringify(a));
+  }catch(err){ ng('cellUserIds: open_idフォールバック','例外'+err.message); }
+  try{
+    const a=cellUserIds(null);
+    (Array.isArray(a) && a.length===0) ? ok('cellUserIds: 未設定は空配列') : ng('cellUserIds: 未設定は空配列', JSON.stringify(a));
+  }catch(err){ ng('cellUserIds: 未設定は空配列','例外'+err.message); }
+
+  // --- v2.6: 週×Division単位の重複チェック ---
+  try{
+    const mShift={ [F.SHIFT.WEEK]:'wk', [F.SHIFT.EMP]:'emp' };
+    const monday=new Date(2026,0,5).getTime();
+    // d1の社員e1が当該週に登録済み
+    const rows=[{ fields:{ wk:monday, emp:{recordIds:['e1']} } }];
+    const dupSameDiv=isDivAlreadyGenerated(rows, mShift, monday, ['e1','e2']); // d1のIDにe1を含む
+    const dupOtherDiv=isDivAlreadyGenerated(rows, mShift, monday, ['x1','x2']); // 別Div（e1を含まない）
+    (dupSameDiv===true && dupOtherDiv===false) ? ok('isDivAlreadyGenerated: 同Divは重複/別Divは非重複') : ng('isDivAlreadyGenerated: 同Divは重複/別Divは非重複','same='+dupSameDiv+' other='+dupOtherDiv);
+  }catch(err){ ng('isDivAlreadyGenerated: 同Divは重複/別Divは非重複','例外'+err.message); }
+  try{
+    const mShift={ [F.SHIFT.WEEK]:'wk', [F.SHIFT.EMP]:'emp' };
+    const monday=new Date(2026,0,5).getTime();
+    const prevWeek=new Date(2025,11,29).getTime(); // 前週の登録は対象外
+    const rows=[{ fields:{ wk:prevWeek, emp:{recordIds:['e1']} } }];
+    isDivAlreadyGenerated(rows, mShift, monday, ['e1'])===false ? ok('isDivAlreadyGenerated: 別週は無視') : ng('isDivAlreadyGenerated: 別週は無視','前週を重複扱いしている');
+  }catch(err){ ng('isDivAlreadyGenerated: 別週は無視','例外'+err.message); }
+
+  // --- v2.6: 自Divisionのみ生成（対象Divの社員だけで生成し、他Divに影響しない）---
+  try{
+    const emps=[];
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[]}));
+    resolveDependents(emps);
+    const divs={d1:{id:'d1',name:'D1',seats:4}, d2:{id:'d2',name:'D2',seats:5}};
+    // d1だけを対象に生成（ハンドラ doGenerate と同じ絞り込み）
+    const d1emps=emps.filter(e=>e.divisionId==='d1');
+    const d1only={d1:divs.d1};
+    const plan=generate(d1emps, d1only, days5, {});
+    const viol=verifyPlan(d1emps, d1only, days5, plan.remote);
+    // d2の社員がplanに一切含まれないこと
+    const leaked=Object.keys(plan.remote).some(id=>id.startsWith('b'));
+    (viol.length===0 && !leaked) ? ok('単一Division生成: d1のみ生成・d2非混入') : ng('単一Division生成: d1のみ生成・d2非混入', leaked?'d2が混入':viol.slice(0,2).join(' / '));
+  }catch(err){ ng('単一Division生成: d1のみ生成・d2非混入','例外'+err.message); }
+
+  // --- v2.7: divisionNameFor（シフト行へ書き込む所属Division名の解決）---
+  try{
+    const divs={d1:{id:'d1',name:'MobileDiv1',seats:4}};
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]});
+    divisionNameFor(e, divs)==='MobileDiv1' ? ok('divisionNameFor: 所属Division名を解決') : ng('divisionNameFor: 所属Division名を解決', String(divisionNameFor(e, divs)));
+  }catch(err){ ng('divisionNameFor: 所属Division名を解決','例外'+err.message); }
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:null,memberIds:[]});
+    divisionNameFor(e, {})===null ? ok('divisionNameFor: 未所属はnull') : ng('divisionNameFor: 未所属はnull','nullになっていない');
+  }catch(err){ ng('divisionNameFor: 未所属はnull','例外'+err.message); }
+
+  // --- v2.8: buildWeekLogFields（週管理マスタへのDivision書き込み）---
+  try{
+    // Division列あり・divName指定 → Divisionがセットされる（selVal=文字列モード）
+    const ctxStub={ opts:{} };
+    const prevWrite=WRITE; WRITE={ link:'arr', sel:'str' };
+    const m={ '週':'fW','生成結果':'fR','ログ':'fL','ステータス':'fS','Division':'fD' };
+    const f=buildWeekLogFields(ctxStub, m, new Date(2026,0,5), V.OK, 'x', 'MobileDiv1');
+    WRITE=prevWrite;
+    (f['fD']==='MobileDiv1') ? ok('buildWeekLogFields: Division列ありで値をセット') : ng('buildWeekLogFields: Division列ありで値をセット', JSON.stringify(f['fD']));
+  }catch(err){ ng('buildWeekLogFields: Division列ありで値をセット','例外'+err.message); }
+  try{
+    // Division列なし → Divisionキー自体が作られない（後方互換）
+    const ctxStub={ opts:{} };
+    const prevWrite=WRITE; WRITE={ link:'arr', sel:'str' };
+    const m={ '週':'fW','生成結果':'fR','ログ':'fL','ステータス':'fS' }; // Division列なし
+    const f=buildWeekLogFields(ctxStub, m, new Date(2026,0,5), V.OK, 'x', 'MobileDiv1');
+    WRITE=prevWrite;
+    (f[undefined]===undefined && !('undefined' in f)) ? ok('buildWeekLogFields: Division列なしは書き込まない') : ng('buildWeekLogFields: Division列なしは書き込まない', JSON.stringify(f));
+  }catch(err){ ng('buildWeekLogFields: Division列なしは書き込まない','例外'+err.message); }
+  try{
+    // Division列ありでもdivName未指定なら書き込まない
+    const ctxStub={ opts:{} };
+    const prevWrite=WRITE; WRITE={ link:'arr', sel:'str' };
+    const m={ '週':'fW','生成結果':'fR','ログ':'fL','ステータス':'fS','Division':'fD' };
+    const f=buildWeekLogFields(ctxStub, m, new Date(2026,0,5), V.OK, 'x', null);
+    WRITE=prevWrite;
+    (!('fD' in f)) ? ok('buildWeekLogFields: divName未指定なら書き込まない') : ng('buildWeekLogFields: divName未指定なら書き込まない', JSON.stringify(f));
+  }catch(err){ ng('buildWeekLogFields: divName未指定なら書き込まない','例外'+err.message); }
+
   return results;
 }
 
@@ -615,8 +743,9 @@ function countRecent(shiftRows, mShift, mondayMs){
 }
 
 /* ---- 書き込み ---- */
-async function writeShifts(ctx, monday, employees, days, remote){
+async function writeShifts(ctx, monday, employees, days, remote, divisions){
   const m=ctx.maps.SHIFT;
+  const hasDivCol=!!m[F.SHIFT.DIV];   // 「所属Division」列が無い環境では書き込まない（後方互換）
   const present={}; days.forEach(d=>{ present[d.idx]=true; });
   const records=employees.map(e=>{
     const fields={};
@@ -626,18 +755,34 @@ async function writeShifts(ctx, monday, employees, days, remote){
       fields[m[label]]=selVal(ctx, m[label], !present[i]?V.OFF:(remote[e.id]&&remote[e.id][i]?V.REMOTE:V.OFFICE));
     });
     fields[m[F.SHIFT.STATUS]]=selVal(ctx, m[F.SHIFT.STATUS], V.DRAFT);
+    if(hasDivCol && divisions && e.divisionId && divisions[e.divisionId]){
+      fields[m[F.SHIFT.DIV]]=selVal(ctx, m[F.SHIFT.DIV], divisionNameFor(e, divisions));  // 行フィルタ用の所属Division
+    }
     return { fields };
   });
   for(let i=0;i<records.length;i+=200){ await ctx.tables.SHIFT.addRecords(records.slice(i,i+200)); }
   return records.length;
 }
-async function writeWeekLog(ctx, monday, result, text){
-  const m=ctx.maps.WLOG; const fields={};
+/* 社員の所属Division名を返す（純粋関数・セルフテストと共用）。未所属/不明はnull。 */
+function divisionNameFor(emp, divisions){
+  if(!emp || !emp.divisionId || !divisions || !divisions[emp.divisionId]) return null;
+  return divisions[emp.divisionId].name;
+}
+async function writeWeekLog(ctx, monday, result, text, divName){
+  const m=ctx.maps.WLOG;
+  const fields=buildWeekLogFields(ctx, m, monday, result, text, divName);
+  await ctx.tables.WLOG.addRecord({ fields });
+}
+/* 週管理マスタへ書き込むフィールドを構築（純粋関数・セルフテストと共用）。
+ * Division列が存在し、かつdivNameが指定された場合のみDivisionをセットする。 */
+function buildWeekLogFields(ctx, m, monday, result, text, divName){
+  const fields={};
   fields[m[F.WLOG.WEEK]]=monday.getTime();
   fields[m[F.WLOG.RESULT]]=selVal(ctx, m[F.WLOG.RESULT], result);
   fields[m[F.WLOG.LOG]]=text||'特記事項なし';
   fields[m[F.WLOG.STATUS]]=selVal(ctx, m[F.WLOG.STATUS], V.DRAFT);
-  await ctx.tables.WLOG.addRecord({ fields });
+  if(m[F.WLOG.DIV] && divName){ fields[m[F.WLOG.DIV]]=selVal(ctx, m[F.WLOG.DIV], divName); }
+  return fields;
 }
 
 /* ---- コンテキスト準備（テーブル＋フィールド検証）---- */
@@ -659,74 +804,130 @@ async function buildContext(){
   return { tables, maps, opts };
 }
 
-/* ---- ボタン: シフト生成（設定チェックを内包）---- */
-btnGen.addEventListener('click', async ()=>{
-  clearLog(); setBusy(true);
+/* ---- 状態（プルダウン用にコンテキストを保持）---- */
+let busy=false;             // 排他制御フラグ
+let pickerCtx=null;         // プルダウン表示時に再利用するコンテキスト
+
+/* Division単位の重複チェック: そのDivの誰かが対象週に既に登録済みか */
+function isDivAlreadyGenerated(shiftRows, mShift, mondayMs, divEmpIds){
+  const idset=new Set(divEmpIds);
+  return shiftRows.some(r=>{
+    const w=Number(r.fields[mShift[F.SHIFT.WEEK]]);
+    if(!w || weeksAgo(w,mondayMs)!==0) return false;
+    const empId=firstLink(r.fields[mShift[F.SHIFT.EMP]]);
+    return empId && idset.has(empId);
+  });
+}
+
+/* 実際の生成処理（対象Divisionを限定して実行）。divId を渡すとそのDivのみ。 */
+async function doGenerate(ctx, employees, divisions, divId){
   const monday=nextMonday();
+  const targetDiv=divisions[divId];
+  if(!targetDiv) throw new Error('対象Divisionが特定できませんでした。');
+  // 対象Divisionの在籍者だけに絞る（生成・検証・書き込みはこの集合で完結）
+  const divEmployees=employees.filter(e=>e.divisionId===divId);
+  if(divEmployees.length===0) throw new Error('【'+targetDiv.name+'】に在籍者がいません。');
+  const divisionsOne={}; divisionsOne[divId]=targetDiv;
+
+  // 「所属Division」列がある場合、対象Division名が選択肢に登録されているか事前確認（書き込み失敗を防ぐ）
+  if(ctx.maps.SHIFT[F.SHIFT.DIV]){
+    const metas=await ctx.tables.SHIFT.getFieldMetaList();
+    const meta=metas.find(x=>x.name===F.SHIFT.DIV);
+    const opts=(meta&&meta.property&&Array.isArray(meta.property.options))?meta.property.options.map(o=>(o&&(o.name||o.text))||'').filter(Boolean):[];
+    if(opts.length && opts.indexOf(targetDiv.name)===-1){
+      throw new Error('シフト表の単一選択「'+F.SHIFT.DIV+'」に選択肢「'+targetDiv.name+'」がありません（現在: '+(opts.join('・')||'未設定')+'）。Division座席数マスタのDivision名と完全一致する選択肢を追加してください。');
+    }
+  }
+
+  const notes=[];
+  const days=await businessDays(ctx, monday, notes);
+  if(days.length===0){ log(fmt(monday)+'週は営業日がないため生成をスキップしました。','warn'); return; }
+
+  const shiftRows=await readAll(ctx.tables.SHIFT);
+  if(isDivAlreadyGenerated(shiftRows, ctx.maps.SHIFT, monday.getTime(), divEmployees.map(e=>e.id))){
+    log('【'+targetDiv.name+'】の'+fmt(monday)+'週シフトは既に存在するため中止しました。作り直す場合は、シフト表から該当週・該当Divisionの行を削除して再実行してください。','warn');
+    return;
+  }
+
+  const pre=preCheck(divEmployees, divisionsOne, days);
+  if(pre.errors.length){
+    await writeWeekLog(ctx, monday, V.ERR, '【'+targetDiv.name+'】\n'+pre.errors.join('\n'), targetDiv.name);
+    pre.errors.forEach(x=>log(x,'err'));
+    log('上記の理由で生成できません。内容を週管理マスタに記録しました。','warn');
+    return;
+  }
+
+  // 確認ダイアログは残す（完了メッセージの代わり）
+  if(!window.confirm('【'+targetDiv.name+'】'+fmt(monday)+'週のシフト下書きを'+divEmployees.length+'名分作成します。よろしいですか？')){ return; }
+
+  const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
+  const plan=generate(divEmployees, divisionsOne, days, recent);
+
+  // 生成結果を全仕様で自己検証（保険。違反があれば書き込まず停止）
+  const viol=verifyPlan(divEmployees, divisionsOne, days, plan.remote);
+  if(viol.length){
+    await writeWeekLog(ctx, monday, V.ERR, '【'+targetDiv.name+'】生成結果が仕様に違反したため中止:\n'+viol.join('\n'), targetDiv.name);
+    viol.slice(0,10).forEach(x=>log(x,'err'));
+    throw new Error('生成結果が仕様違反のため書き込みを中止しました（上記）。この内容をそのまま共有してください。');
+  }
+
+  const n=await writeShifts(ctx, monday, divEmployees, days, plan.remote, divisionsOne);
+  const allNotes=notes.concat(pre.warnings);
+  const lines=['【'+targetDiv.name+'】対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）',
+    '在籍'+divEmployees.length+'名／席'+targetDiv.seats+' → 毎日リモート'+Math.max(0,divEmployees.length-targetDiv.seats)+'名',
+    '（抽選試行: '+plan.attempts+'回で確定）'];
+  if(allNotes.length){ lines.push('', '注意事項:'); allNotes.forEach(x=>lines.push('・'+x)); }
+  await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, lines.join('\n'), targetDiv.name);
+  report(lines.join('\n'));
+  allNotes.forEach(x=>log(x,'warn'));
+}
+
+/* ---- ボタン: シフト生成（自Divisionのみ・設定チェック内包）---- */
+btnGen.addEventListener('click', async ()=>{
+  if(busy) return;                 // 排他制御（二重実行防止）
+  busy=true; setBusy(true); clearLog();
+  log('処理中…','run');            // 唯一の進捗表示（完了メッセージは出さない）
   try{
-    // === 事前検証（旧「設定チェック」をここに統合）===
-    log('Baseに接続し、設定を検証しています…','run');
-    const ctx=await buildContext();   // テーブル名・フィールド名・選択肢を検証（不一致は例外）
-    log('テーブル・フィールド・選択肢: すべて確認できました','ok');
-    if(!ctx.maps.EMP[F.EMP.EXCEPTION]) log('例外フラグ列は未作成のため、全員「例外なし」として扱います。','warn');
+    // プルダウンが表示済みで選択されている場合は、その選択を使う
+    if(pickerCtx && divPicker.style.display!=='none' && divSelect.value){
+      await doGenerate(pickerCtx.ctx, pickerCtx.employees, pickerCtx.divisions, divSelect.value);
+      return;
+    }
+
+    // 事前検証（旧「設定チェック」を内包。ログは出さず、エラー時のみ表示）
+    const ctx=await buildContext();
     const { employees, divisions }=await loadMasters(ctx);
     if(employees.length===0) throw new Error('在籍中の社員が社員マスタにありません。社員マスタの在籍状況が「在籍」の行があるか確認してください。');
-    log('社員マスタ: 在籍'+employees.length+'名 ／ Division: '+Object.keys(divisions).length+'件','ok');
-    const withDep=employees.filter(e=>e.dependents.length>0).length;
-    log('担当メンバーを持つチーフ／アシスタント: '+withDep+'名（担当メンバー出社日は常駐）');
+    await probeWriteFormat(ctx, employees[0].id);   // 書き込み形式の判定（テスト行を作成→検証→削除）
 
-    // 書き込み形式の判定（テスト行を作成→検証→削除）
-    log('シフト表への書き込み形式を判定しています…','run');
-    const fmtName=await probeWriteFormat(ctx, employees[0].id);
-    log('書き込み形式: '+fmtName+' を採用','ok');
-
-    // === 生成可否の事前チェック ===
-    const notes=[];
-    const days=await businessDays(ctx, monday, notes);
-    if(days.length===0){ log(fmt(monday)+'週は営業日がないため生成をスキップしました。','warn'); return; }
-    const shiftRows=await readAll(ctx.tables.SHIFT);
-    if(shiftRows.some(r=>{ const w=Number(r.fields[ctx.maps.SHIFT[F.SHIFT.WEEK]]); return w&&weeksAgo(w,monday.getTime())===0; })){
-      log(fmt(monday)+'週のシフトは既に存在するため中止しました。作り直す場合は該当週の行をシフト表から削除して再実行してください。','warn'); return;
-    }
-    const pre=preCheck(employees, divisions, days);
-    if(pre.errors.length){
-      await writeWeekLog(ctx, monday, V.ERR, pre.errors.join('\n'));
-      pre.errors.forEach(x=>log(x,'err'));
-      log('上記の理由で生成できません。内容を週管理マスタに記録しました。','warn'); return;
+    // 対象Divisionの特定: 操作者のLarkアカウント → 社員マスタ照合 → 所属Division
+    let divId=null;
+    const uid=await getCurrentUserId();
+    if(uid){
+      const me=employees.find(e=>(e.accountIds||[]).map(String).includes(String(uid)));
+      if(me && me.divisionId && divisions[me.divisionId]) divId=me.divisionId;
     }
 
-    // === 生成 ===
-    if(!window.confirm(fmt(monday)+'週のシフト下書きを'+employees.length+'名分作成します。よろしいですか？')){ log('キャンセルしました。'); return; }
-    log('生成しています…','run');
-    const recent=countRecent(shiftRows, ctx.maps.SHIFT, monday.getTime());
-    const plan=generate(employees, divisions, days, recent);
-
-    // 生成結果を全仕様で自己検証（保険。違反があれば書き込まずに停止）
-    const viol=verifyPlan(employees, divisions, days, plan.remote);
-    if(viol.length){
-      await writeWeekLog(ctx, monday, V.ERR, '生成結果が仕様に違反したため中止:\n'+viol.join('\n'));
-      viol.slice(0,10).forEach(x=>log(x,'err'));
-      throw new Error('生成結果が仕様違反のため書き込みを中止しました（上記）。この内容をそのまま共有してください。');
+    if(divId){
+      // 自動判定成功 → そのDivisionのみ生成
+      if(divPicker) divPicker.style.display='none';
+      await doGenerate(ctx, employees, divisions, divId);
+    }else{
+      // 自動判定不可 → プルダウンを表示してフォールバック（このタップでは生成しない）
+      pickerCtx={ ctx, employees, divisions };
+      divSelect.innerHTML='';
+      Object.keys(divisions).forEach(id=>{
+        const o=document.createElement('option'); o.value=id; o.textContent=divisions[id].name; divSelect.appendChild(o);
+      });
+      divPicker.style.display='block';
+      log('操作者の所属Divisionを自動判定できませんでした（社員マスタのLarkアカウント未設定、または取得不可）。','warn');
+      log('上の「対象Division」を選び、もう一度「シフトを生成（下書き）」を押してください。','warn');
     }
-
-    const n=await writeShifts(ctx, monday, employees, days, plan.remote);
-    const allNotes=notes.concat(pre.warnings);
-    const lines=['対象週: '+fmt(monday)+'〜（営業日'+days.length+'日 ／ '+n+'名分を作成）'];
-    const byDiv=groupByDiv(employees);
-    Object.keys(byDiv).forEach(divId=>{ const dv=divisions[divId]; if(!dv) return;
-      lines.push('・'+dv.name+': 在籍'+byDiv[divId].length+'名／席'+dv.seats+' → 毎日リモート'+Math.max(0,byDiv[divId].length-dv.seats)+'名'); });
-    lines.push('（抽選試行: '+plan.attempts+'回で確定）');
-    if(allNotes.length){ lines.push('', '注意事項:'); allNotes.forEach(x=>lines.push('・'+x)); }
-    await writeWeekLog(ctx, monday, allNotes.length?V.WARN:V.OK, lines.join('\n'));
-    log('下書きを作成しました','ok');
-    report(lines.join('\n'));
-    allNotes.forEach(x=>log(x,'warn'));
-    log('シフト表を確認し、問題なければ「週管理マスタ」のステータスを「確定」に変更してください（全体通知の自動化が発火します）。');
   }catch(e){
     log('エラー: '+String(e.message||e),'err');
     log('↑このメッセージをそのままコピーして共有いただければ原因を特定できます。','warn');
-    try{ const ctx=await buildContext(); await writeWeekLog(ctx, monday, V.ERR, String(e.message||e)); }catch(_){}
-  }finally{ setBusy(false); }
+    try{ const ctx=await buildContext(); await writeWeekLog(ctx, nextMonday(), V.ERR, String(e.message||e)); }catch(_){}
+  }finally{ busy=false; setBusy(false); }
 });
 
 /* ---- ボタン: 仕様テスト（内蔵セルフテスト・Base不要）---- */
