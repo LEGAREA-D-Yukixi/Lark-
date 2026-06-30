@@ -68,7 +68,7 @@
     <svg class="tri" viewBox="0 0 64 48" aria-hidden="true"><g fill="#7da6ee"><polygon points="0,0 12,0 6,10"/><polygon points="18,0 30,0 24,10"/><polygon points="36,0 48,0 42,10"/><polygon points="9,14 21,14 15,24"/><polygon points="27,14 39,14 33,24"/><polygon points="18,28 30,28 24,38"/></g></svg>
     <span class="bar bar1"></span><span class="bar bar2"></span>
     <div class="brand"><span class="logo"></span>LEGAREA</div>
-    <h1>リモートシフト自動生成<span class="ver">v3.3</span></h1>
+    <h1>リモートシフト自動生成<span class="ver">v3.4</span></h1>
     <div class="rule"></div>
     <div class="eyebrow">REMOTE SHIFT GENERATOR</div>
   </div>
@@ -89,14 +89,14 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v3.3（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.4（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
  *      ※在籍中のメンバーだけを判定対象にします
  *   3) リモート可否: ON／OFF の単一選択（チェックボックスでも動作）
  *   4) 役職の兼務: 複数役職のうち1つでもOFFがあれば常駐扱い（安全側）
- *   5) 例外フラグ: 列が無ければ全員「なし」として扱う（任意）
+ *   5) 社員マスタ「リモート可否」: 可／不可の単一選択（任意）。設定があれば役職より優先、空欄は役職に従う
  *   6) 表記: 出社→「本社」、休→「休み」に変更（冒頭のVALで調整可能）＋選択肢の自動検証を追加
  *   7) 書き込み形式を6通りに拡張（選択肢ID解決を含む）＋失敗理由の詳細表示
  *   8) v2.5: 「設定チェック」ボタンを廃止し検証を生成ボタンに統合／エラーは原因特定できる粒度で表示
@@ -124,6 +124,9 @@
  *  16) v3.3: リモート方針を変更。「席からあふれた人数だけリモート」をやめ、リモート可能な人を
  *           週2回・連続不可・公平化の範囲で最大限リモートにする（出社は席数が上限・出社の下限なし）。
  *           generate/verifyPlanを新方針に更新し関連セルフテストも刷新／UIをデザイン3（幾何学アクセント）に変更
+ *  17) v3.4: 社員マスタに「リモート可否」（可／不可）を新設し、人ごとにリモート可否を上書き可能に。
+ *           優先順位は「社員マスタ（可/不可）＞ 役職マスタ」、空欄は役職に従う。未使用の例外フラグ処理は削除し統合。
+ *           buildEmployeeの判定を更新し、上書き/フォールバックのセルフテストを追加（既存テストも全て維持）
  * --------------------------------------------------------------------
  * 認証情報・APIキーは一切含みません（開いている人の権限で動作します）。
  * 使い方: ①このファイルをHTTPSのURLに設置 → ②Baseの拡張機能から
@@ -142,14 +145,14 @@ const CONFIG = {
     ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
     DIV:     { NAME: 'Division名', SEATS: '席数' },
     EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
-               EXCEPTION: '例外フラグ', STATUS: '在籍状況', ACCOUNT: 'プラグイン連携用' }, // 例外フラグ/アカウントは任意
+               REMOTE_OVERRIDE: 'リモート可否', STATUS: '在籍状況', ACCOUNT: 'プラグイン連携用' }, // リモート可否/アカウントは任意
     SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], DIV: '所属Division' },
     WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス', DIV: 'Division' },
     HOLIDAY: { DATE: '日付', NAME: '名称' }
   },
   VAL: {
     OFFICE: '本社', REMOTE: 'リモート', OFF: '休み', DRAFT: '下書き', FINAL: '確定',
-    ACTIVE: '在籍', MUST_ONSITE: '常駐必須', OK: '成功', WARN: '警告あり', ERR: 'エラー'
+    ACTIVE: '在籍', OVERRIDE_OK: '可', OVERRIDE_NG: '不可', OK: '成功', WARN: '警告あり', ERR: 'エラー'
   },
   RULES: { MAX_REMOTE_PER_WEEK: 2, FAIRNESS_LOOKBACK_WEEKS: 4, MAX_RETRY: 200 }
 };
@@ -404,7 +407,7 @@ async function loadMasters(ctx){
       id:r.recordId,
       name:cellText(f[m[F.EMP.NAME]]),
       linkedRoles:linkedRoles,
-      exception:cellText(f[m[F.EMP.EXCEPTION]]),           // 列が無ければ常に空（=例外なし）
+      remoteOverride:m[F.EMP.REMOTE_OVERRIDE]?cellText(f[m[F.EMP.REMOTE_OVERRIDE]]):'', // 社員マスタの個別リモート可否（列が無ければ空＝役職に従う）
       divisionId:firstLink(f[m[F.EMP.DIV]]),
       memberIds:cellLinkIds(f[m[F.EMP.MEMBERS]]),          // 担当メンバー（チーフ／アシ行に入る）
       accountIds:m[F.EMP.ACCOUNT]?cellUserIds(f[m[F.EMP.ACCOUNT]]):[] // Larkアカウント（任意）
@@ -415,16 +418,22 @@ async function loadMasters(ctx){
 }
 
 /* ---- 社員レコードの解釈（純粋関数・セルフテストと共用）----
- * 入力: { id, name, linkedRoles:[{name,remoteOK}], exception, divisionId, memberIds }
- * リモート可の判定: 役職が1つ以上あり、その全役職がリモート可で、例外フラグが常駐必須でないこと（兼務は安全側）。*/
+ * 入力: { id, name, linkedRoles:[{name,remoteOK}], remoteOverride, divisionId, memberIds }
+ * リモート可の判定（優先順位）:
+ *   1) 社員マスタ「リモート可否」が「可」→ 強制的にリモート可（役職がOFFでも上書き）
+ *   2) 社員マスタ「リモート可否」が「不可」→ 強制的に常駐（役職がONでも上書き）
+ *   3) 未設定（空欄）→ 役職マスタに従う（役職が1つ以上あり、その全役職がリモート可。兼務は安全側）。*/
 function buildEmployee(src){
   const linked=src.linkedRoles||[];
+  const ov=src.remoteOverride||'';
+  const roleBased=linked.length>0 && linked.every(x=>x.remoteOK);
+  const remoteOK = ov===V.OVERRIDE_OK ? true : (ov===V.OVERRIDE_NG ? false : roleBased);
   return {
     id:src.id,
     name:src.name||'(氏名未設定)',
     roleName:linked.length?linked.map(x=>x.name).join('・'):'(役職未設定)',
     hasRole:linked.length>0,
-    remoteOK:linked.length>0 && linked.every(x=>x.remoteOK) && src.exception!==V.MUST_ONSITE,
+    remoteOK:remoteOK,
     divisionId:src.divisionId||null,
     memberIds:src.memberIds||[],
     accountIds:src.accountIds||[],
@@ -645,25 +654,37 @@ function runSelfTest(){
 
   // --- 単体テスト群: buildEmployee の解釈ルール ---
   try{
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d',memberIds:[]});
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d',memberIds:[]});
     e.remoteOK ? ok('buildEmployee: 単一リモート可役職→可') : ng('buildEmployee: 単一リモート可役職→可','remoteOKがfalse');
   }catch(err){ ng('buildEmployee: 単一リモート可役職→可','例外'+err.message); }
   try{
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE,ROLE_ONSITE],exception:'',divisionId:'d',memberIds:[]});
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE,ROLE_ONSITE],remoteOverride:'',divisionId:'d',memberIds:[]});
     !e.remoteOK ? ok('buildEmployee: 兼務で1つでも常駐→常駐') : ng('buildEmployee: 兼務で1つでも常駐→常駐','remoteOKがtrueになっている');
   }catch(err){ ng('buildEmployee: 兼務で1つでも常駐→常駐','例外'+err.message); }
   try{
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:V.MUST_ONSITE,divisionId:'d',memberIds:[]});
-    !e.remoteOK ? ok('buildEmployee: 例外フラグ常駐必須→常駐') : ng('buildEmployee: 例外フラグ常駐必須→常駐','例外フラグが無視されている');
-  }catch(err){ ng('buildEmployee: 例外フラグ常駐必須→常駐','例外'+err.message); }
+    // 社員マスタ「不可」→ 役職がリモート可でも常駐に上書き
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:V.OVERRIDE_NG,divisionId:'d',memberIds:[]});
+    !e.remoteOK ? ok('buildEmployee: 社員マスタ「不可」→常駐に上書き') : ng('buildEmployee: 社員マスタ「不可」→常駐に上書き','上書きされていない');
+  }catch(err){ ng('buildEmployee: 社員マスタ「不可」→常駐に上書き','例外'+err.message); }
   try{
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[],exception:'',divisionId:'d',memberIds:[]});
+    // 社員マスタ「可」→ 役職が常駐(OFF)でもリモート可に上書き
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_ONSITE],remoteOverride:V.OVERRIDE_OK,divisionId:'d',memberIds:[]});
+    e.remoteOK ? ok('buildEmployee: 社員マスタ「可」→リモート可に上書き') : ng('buildEmployee: 社員マスタ「可」→リモート可に上書き','上書きされていない');
+  }catch(err){ ng('buildEmployee: 社員マスタ「可」→リモート可に上書き','例外'+err.message); }
+  try{
+    // 社員マスタ未設定（空欄）→ 役職マスタに従う（ON役職→可 / OFF役職→不可）
+    const on=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d',memberIds:[]});
+    const off=buildEmployee({id:'b',name:'B',linkedRoles:[ROLE_ONSITE],remoteOverride:'',divisionId:'d',memberIds:[]});
+    (on.remoteOK && !off.remoteOK) ? ok('buildEmployee: 未設定は役職マスタにフォールバック') : ng('buildEmployee: 未設定は役職マスタにフォールバック','on='+on.remoteOK+' off='+off.remoteOK);
+  }catch(err){ ng('buildEmployee: 未設定は役職マスタにフォールバック','例外'+err.message); }
+  try{
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[],remoteOverride:'',divisionId:'d',memberIds:[]});
     (!e.remoteOK && !e.hasRole) ? ok('buildEmployee: 役職未設定→常駐扱い') : ng('buildEmployee: 役職未設定→常駐扱い','hasRole/remoteOKが不正');
   }catch(err){ ng('buildEmployee: 役職未設定→常駐扱い','例外'+err.message); }
   try{
     const list=[
-      buildEmployee({id:'chief',name:'C',linkedRoles:[ROLE_CHIEF],exception:'',divisionId:'d',memberIds:['m1','retired']}),
-      buildEmployee({id:'m1',name:'M1',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d',memberIds:[]})
+      buildEmployee({id:'chief',name:'C',linkedRoles:[ROLE_CHIEF],remoteOverride:'',divisionId:'d',memberIds:['m1','retired']}),
+      buildEmployee({id:'m1',name:'M1',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d',memberIds:[]})
     ];
     resolveDependents(list);
     (list[0].dependents.length===1 && list[0].dependents[0]==='m1')
@@ -681,35 +702,35 @@ function runSelfTest(){
   }
   // S1: 6名/席4 → 毎日2名リモート、メンバーのみ
   (function(){
-    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     scenario('6名/席4/全員メンバー', emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
   })();
   // S2: 常駐必須を含む 8名/席6（毎日2名リモート）、2名が常駐必須＋リモート可6名 → 供給延べ12枠で充足
   (function(){
     const emps=[];
-    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     scenario('8名/席6/常駐必須2名', emps, {d1:{id:'d1',name:'D1',seats:6}}, days5);
   })();
   // S3: チーフ＋担当メンバー（チーフは担当出社日は常駐になるはず）7名/席5
   (function(){
-    const chief=buildEmployee({id:'c',name:'Chief',linkedRoles:[ROLE_CHIEF],exception:'',divisionId:'d1',memberIds:['m0','m1']});
+    const chief=buildEmployee({id:'c',name:'Chief',linkedRoles:[ROLE_CHIEF],remoteOverride:'',divisionId:'d1',memberIds:['m0','m1']});
     const emps=[chief];
-    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'m'+i,name:'M'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'x'+i,name:'X'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<2;i++) emps.push(buildEmployee({id:'m'+i,name:'M'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'x'+i,name:'X'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     scenario('7名/席5/チーフ＋担当2名', emps, {d1:{id:'d1',name:'D1',seats:5}}, days5);
   })();
   // S4: 複数Division同時
   (function(){
     const emps=[];
-    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[]}));
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d2',memberIds:[]}));
     scenario('2Division同時(6/席4, 7/席5)', emps, {d1:{id:'d1',name:'D1',seats:4}, d2:{id:'d2',name:'D2',seats:5}}, days5);
   })();
   // S5: 席=人数。新仕様では「リモート可能な人は最大限リモート」→ リモートが発生し、出社は席数以内
   (function(){
     try{
-      const emps=[]; for(let i=0;i<4;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+      const emps=[]; for(let i=0;i<4;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
       resolveDependents(emps);
       const divs={d1:{id:'d1',name:'D1',seats:4}};
       const plan=generate(emps, divs, days5, {});
@@ -724,7 +745,7 @@ function runSelfTest(){
 
   // --- preCheck（実行不能の検知）---
   try{
-    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    const emps=[]; for(let i=0;i<6;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     resolveDependents(emps);
     const pre=preCheck(emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
     pre.errors.length>0 ? ok('preCheck: 常駐必須が席超過をエラー検知') : ng('preCheck: 常駐必須が席超過をエラー検知','エラーが出ていない');
@@ -732,8 +753,8 @@ function runSelfTest(){
   try{
     // リモート可が足りない: 7名/席4 → 毎日3名×5日=延べ15枠 必要、リモート可3名×2=6枠しか出せない
     const emps=[];
-    for(let i=0;i<3;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],exception:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<3;i++) emps.push(buildEmployee({id:'r'+i,name:'R'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<4;i++) emps.push(buildEmployee({id:'o'+i,name:'O'+i,linkedRoles:[ROLE_ONSITE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     resolveDependents(emps);
     const pre=preCheck(emps, {d1:{id:'d1',name:'D1',seats:4}}, days5);
     pre.errors.length>0 ? ok('preCheck: 供給不足をエラー検知') : ng('preCheck: 供給不足をエラー検知','エラーが出ていない');
@@ -742,7 +763,7 @@ function runSelfTest(){
   // --- 公平化(countRecent)とverifyPlanの違反検知力の確認 ---
   try{
     // わざと違反した手書きプランをverifyPlanが検知できるか（テスト自身の健全性確認）
-    const emps=[buildEmployee({id:'e0',name:'E0',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]})];
+    const emps=[buildEmployee({id:'e0',name:'E0',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]})];
     resolveDependents(emps);
     const bad={e0:{0:true,1:true}}; // 月火で連続リモート
     const viol=verifyPlan(emps, {d1:{id:'d1',name:'D1',seats:0}}, days5, bad);
@@ -784,8 +805,8 @@ function runSelfTest(){
   // --- v2.6: 自Divisionのみ生成（対象Divの社員だけで生成し、他Divに影響しない）---
   try{
     const emps=[];
-    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
-    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[]}));
+    for(let i=0;i<6;i++) emps.push(buildEmployee({id:'a'+i,name:'A'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
+    for(let i=0;i<7;i++) emps.push(buildEmployee({id:'b'+i,name:'B'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d2',memberIds:[]}));
     resolveDependents(emps);
     const divs={d1:{id:'d1',name:'D1',seats:4}, d2:{id:'d2',name:'D2',seats:5}};
     // d1だけを対象に生成（ハンドラ doGenerate と同じ絞り込み）
@@ -801,11 +822,11 @@ function runSelfTest(){
   // --- v2.7: divisionNameFor（シフト行へ書き込む所属Division名の解決）---
   try{
     const divs={d1:{id:'d1',name:'MobileDiv1',seats:4}};
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]});
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]});
     divisionNameFor(e, divs)==='MobileDiv1' ? ok('divisionNameFor: 所属Division名を解決') : ng('divisionNameFor: 所属Division名を解決', String(divisionNameFor(e, divs)));
   }catch(err){ ng('divisionNameFor: 所属Division名を解決','例外'+err.message); }
   try{
-    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:null,memberIds:[]});
+    const e=buildEmployee({id:'a',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:null,memberIds:[]});
     divisionNameFor(e, {})===null ? ok('divisionNameFor: 未所属はnull') : ng('divisionNameFor: 未所属はnull','nullになっていない');
   }catch(err){ ng('divisionNameFor: 未所属はnull','例外'+err.message); }
 
@@ -895,14 +916,14 @@ function runSelfTest(){
   // --- v3.2: findEmployeeByAccount（操作者ID→社員照合）と列名 ---
   try{
     const emps=[
-      buildEmployee({id:'e1',name:'土屋',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']}),
-      buildEmployee({id:'e2',name:'他',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d2',memberIds:[],accountIds:['ou_xyz999']})
+      buildEmployee({id:'e1',name:'土屋',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']}),
+      buildEmployee({id:'e2',name:'他',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d2',memberIds:[],accountIds:['ou_xyz999']})
     ];
     const me=findEmployeeByAccount(emps, 'ou_abc123');
     (me && me.id==='e1' && me.divisionId==='d1') ? ok('findEmployeeByAccount: IDで本人を照合') : ng('findEmployeeByAccount: IDで本人を照合', me?me.id:'null');
   }catch(err){ ng('findEmployeeByAccount: IDで本人を照合','例外'+err.message); }
   try{
-    const emps=[buildEmployee({id:'e1',name:'A',linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']})];
+    const emps=[buildEmployee({id:'e1',name:'A',linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[],accountIds:['ou_abc123']})];
     (findEmployeeByAccount(emps,'ou_notfound')===null && findEmployeeByAccount(emps,null)===null)
       ? ok('findEmployeeByAccount: 不一致/未指定はnull') : ng('findEmployeeByAccount: 不一致/未指定はnull','nullになっていない');
   }catch(err){ ng('findEmployeeByAccount: 不一致/未指定はnull','例外'+err.message); }
@@ -913,7 +934,7 @@ function runSelfTest(){
   // --- v3.3: リモート最大化（席に余裕があってもリモート可能な人は上限まで）---
   try{
     // 5名・席5（全員座れる＝旧仕様ならリモート0）・全員リモート可・5営業日(隣接あり)
-    const emps=[]; for(let i=0;i<5;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    const emps=[]; for(let i=0;i<5;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     resolveDependents(emps);
     const divs={d1:{id:'d1',name:'D1',seats:5}};
     const plan=generate(emps, divs, days5, {});
@@ -927,7 +948,7 @@ function runSelfTest(){
   try{
     // 出社の下限がないこと：席に余裕があってもリモートが最低人数(N-seats=0)に縛られない
     // 3名・席3・全員リモート可 → 最低リモート0だが、実際にはリモートが発生する
-    const emps=[]; for(let i=0;i<3;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],exception:'',divisionId:'d1',memberIds:[]}));
+    const emps=[]; for(let i=0;i<3;i++) emps.push(buildEmployee({id:'e'+i,name:'E'+i,linkedRoles:[ROLE_REMOTE],remoteOverride:'',divisionId:'d1',memberIds:[]}));
     resolveDependents(emps);
     const divs={d1:{id:'d1',name:'D1',seats:3}};
     const plan=generate(emps, divs, days5, {});
@@ -1001,7 +1022,7 @@ async function buildContext(){
   const problems=[];
   checkFields(maps.ROLE,[F.ROLE.NAME,F.ROLE.REMOTE_OK],CONFIG.TABLES.ROLE,problems);
   checkFields(maps.DIV,[F.DIV.NAME,F.DIV.SEATS],CONFIG.TABLES.DIV,problems);
-  checkFields(maps.EMP,[F.EMP.NAME,F.EMP.ROLE,F.EMP.DIV,F.EMP.MEMBERS,F.EMP.STATUS],CONFIG.TABLES.EMP,problems); // 例外フラグは任意
+  checkFields(maps.EMP,[F.EMP.NAME,F.EMP.ROLE,F.EMP.DIV,F.EMP.MEMBERS,F.EMP.STATUS],CONFIG.TABLES.EMP,problems); // リモート可否/アカウントは任意
   checkFields(maps.SHIFT,SHIFT_WRITE_FIELDS(),CONFIG.TABLES.SHIFT,problems);
   checkFields(maps.WLOG,[F.WLOG.WEEK,F.WLOG.RESULT,F.WLOG.LOG,F.WLOG.STATUS],CONFIG.TABLES.WLOG,problems);
   checkFields(maps.HOLIDAY,[F.HOLIDAY.DATE,F.HOLIDAY.NAME],CONFIG.TABLES.HOLIDAY,problems);
