@@ -68,7 +68,7 @@
     <svg class="tri" viewBox="0 0 64 48" aria-hidden="true"><g fill="#7da6ee"><polygon points="0,0 12,0 6,10"/><polygon points="18,0 30,0 24,10"/><polygon points="36,0 48,0 42,10"/><polygon points="9,14 21,14 15,24"/><polygon points="27,14 39,14 33,24"/><polygon points="18,28 30,28 24,38"/></g></svg>
     <span class="bar bar1"></span><span class="bar bar2"></span>
     <div class="brand"><span class="logo"></span>LEGAREA</div>
-    <h1>リモートシフト自動生成<span class="ver">v3.4</span></h1>
+    <h1>リモートシフト自動生成<span class="ver">v3.5</span></h1>
     <div class="rule"></div>
     <div class="eyebrow">REMOTE SHIFT GENERATOR</div>
   </div>
@@ -89,7 +89,7 @@
 
 <script type="module">
 /* ====================================================================
- * リモートシフト自動生成プラグイン v3.4（Lark Base用・単一ファイル）
+ * リモートシフト自動生成プラグイン v3.5（Lark Base用・単一ファイル）
  * 2026-06-12 改修: 実際のBase構造に合わせた対応版
  *   1) テーブル名: 役職マスタ ／ Division座席数マスタ ／ 週管理マスタ
  *   2) 担当関係: チーフ／アシスタントの行に「担当メンバー」（関連・複数）を持つ方式
@@ -144,7 +144,7 @@ const CONFIG = {
   FIELD: {
     ROLE:    { NAME: '役職名', REMOTE_OK: 'リモート可否' },
     DIV:     { NAME: 'Division名', SEATS: '席数' },
-    EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: '担当メンバー',
+    EMP:     { NAME: '氏名', ROLE: '役職', DIV: '所属Division', MEMBERS: 'フォロー担当メンバー',
                REMOTE_OVERRIDE: 'リモート可否', STATUS: '在籍状況', ACCOUNT: 'プラグイン連携用' }, // リモート可否/アカウントは任意
     SHIFT:   { WEEK: '週', EMP: '社員', DAYS: ['月','火','水','木','金'], DIV: '所属Division' },
     WLOG:    { WEEK: '週', RESULT: '生成結果', LOG: 'ログ', STATUS: 'ステータス', DIV: 'Division' },
@@ -930,6 +930,9 @@ function runSelfTest(){
   try{
     (F.EMP.ACCOUNT==='プラグイン連携用') ? ok('CONFIG: アカウント列名が「プラグイン連携用」') : ng('CONFIG: アカウント列名が「プラグイン連携用」', F.EMP.ACCOUNT);
   }catch(err){ ng('CONFIG: アカウント列名が「プラグイン連携用」','例外'+err.message); }
+  try{
+    (F.EMP.MEMBERS==='フォロー担当メンバー') ? ok('CONFIG: 担当メンバー列名が「フォロー担当メンバー」') : ng('CONFIG: 担当メンバー列名が「フォロー担当メンバー」', F.EMP.MEMBERS);
+  }catch(err){ ng('CONFIG: 担当メンバー列名が「フォロー担当メンバー」','例外'+err.message); }
 
   // --- v3.3: リモート最大化（席に余裕があってもリモート可能な人は上限まで）---
   try{
